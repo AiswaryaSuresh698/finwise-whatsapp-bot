@@ -91,6 +91,7 @@ def whatsapp():
     from_number = request.form.get("From")
     body = request.form.get("Body")
     media_count = request.form.get("NumMedia")
+    print("Reached media processing section")
 
     print("From:", from_number)
     print("Body:", body)
@@ -162,6 +163,9 @@ def whatsapp():
     # IMAGE MESSAGE
     media_url = request.form.get("MediaUrl0")
     media_type = request.form.get("MediaContentType0", "")
+
+    print("Media URL:", media_url)
+    print("Media Type:", media_type)
 
     if not media_url:
         response.message("Please upload a bill image.")
