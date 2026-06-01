@@ -1,6 +1,9 @@
 .env
 venv/
 __pycache__/
+
 data/
 finwise_storage/
+
 *.csv
+*.pyc
