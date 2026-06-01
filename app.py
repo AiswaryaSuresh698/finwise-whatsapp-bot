@@ -1,0 +1,991 @@
+import os
+from io import BytesIO
+
+from click import style
+import pandas as pd
+import qrcode
+import streamlit as st
+import random
+import time
+from twilio.rest import Client
+from dotenv import load_dotenv
+load_dotenv()
+import os
+import random
+import time
+from twilio.rest import Client
+
+from storage_utils import (
+    DEFAULT_FOLDERS,
+    ensure_storage,
+    load_entries,
+    save_entries,
+    load_petpooja_entries,
+    save_petpooja_entries,
+    update_vendor_memory,
+    register_user,
+    validate_login,
+    reset_password,
+    clean_phone,
+)
+
+ensure_storage()
+st.set_page_config(page_title="FinWise Bills", layout="wide")
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def read_petpooja_file(uploaded_file):
+    file_name = uploaded_file.name.lower()
+    try:
+        if file_name.endswith(".xlsx"):
+            return pd.read_excel(uploaded_file, engine="openpyxl", header=None)
+        if file_name.endswith(".xls"):
+            try:
+                return pd.read_excel(uploaded_file, engine="xlrd", header=None)
+            except Exception:
+                uploaded_file.seek(0)
+                return pd.read_html(uploaded_file)[0]
+        uploaded_file.seek(0)
+        return pd.read_html(uploaded_file)[0]
+    except Exception as e:
+        raise Exception(f"Could not read Petpooja file: {e}")
+
+
+def build_petpooja_report_df(raw_df):
+    header_row_index = None
+    for i in range(len(raw_df)):
+        row_values = raw_df.iloc[i].astype(str).str.strip().str.lower().tolist()
+        if "date" in row_values and ("order no." in row_values or "order no" in row_values):
+            header_row_index = i
+            break
+
+    if header_row_index is None:
+        return pd.DataFrame()
+
+    headers = raw_df.iloc[header_row_index].tolist()
+    petpooja_df = raw_df.iloc[header_row_index + 1:].copy()
+    petpooja_df.columns = headers
+    petpooja_df = petpooja_df.dropna(how="all")
+
+    if "Order No." in petpooja_df.columns:
+        petpooja_df = petpooja_df[
+            petpooja_df["Order No."].astype(str).str.lower().str.strip() != "total"
+        ]
+
+    if "Date" in petpooja_df.columns:
+        petpooja_df["date_parsed"] = pd.to_datetime(
+        petpooja_df["Date"],
+        errors="coerce",
+        dayfirst=True
+)
+    else:
+        petpooja_df["date_parsed"] = pd.NaT
+
+    amount_col = None
+    for col in ["My Amount", "Total", "Total + Tip", "Net Amount", "Amount"]:
+        if col in petpooja_df.columns:
+            amount_col = col
+            break
+
+    petpooja_df["petpooja_total"] = (
+        pd.to_numeric(petpooja_df[amount_col], errors="coerce").fillna(0)
+        if amount_col
+        else 0.0
+    )
+
+    payment_col = None
+    for col in ["Payment Mode", "Payment Method", "Mode", "Payment Type"]:
+        if col in petpooja_df.columns:
+            payment_col = col
+            break
+
+    petpooja_df["payment_method"] = (
+        petpooja_df[payment_col].astype(str).str.strip() if payment_col else "Unknown"
+    )
+
+    return petpooja_df
+
+PETPOOJA_INPUT_COLUMNS = [
+    "Order No.",
+    "Date",
+    "Payment Type",
+    "Order Type",
+    "Area Type",
+    "My Amount",
+    "Discount",
+    "Delivery Charge",
+    "container",
+    "Water bottle",
+    "Additional Charge",
+    "Other Deduction Charge",
+    "SGST (A)",
+    "CGST (A)",
+    "Waived Off",
+    "Total",
+    "Assign To",
+    "Biller Name",
+    "Reason",
+    "Tip",
+    "Total + Tip",
+]
+
+def normalize_saved_petpooja_df(df):
+    if df.empty:
+        return df
+
+    if "Date" in df.columns:
+        df["date_parsed"] = pd.to_datetime(
+            df["Date"],
+            errors="coerce",
+            dayfirst=True
+        )
+    elif "date" in df.columns:
+        df["date_parsed"] = pd.to_datetime(
+            df["date"],
+            errors="coerce",
+            dayfirst=True
+        )
+    else:
+        df["date_parsed"] = pd.NaT
+
+    if "Total" in df.columns:
+        df["petpooja_total"] = pd.to_numeric(df["Total"], errors="coerce").fillna(0)
+    elif "total" in df.columns:
+        df["petpooja_total"] = pd.to_numeric(df["total"], errors="coerce").fillna(0)
+    else:
+        df["petpooja_total"] = 0.0
+
+    if "Payment Type" in df.columns:
+        df["payment_method"] = df["Payment Type"].astype(str).str.strip()
+    elif "payment_method" not in df.columns:
+        df["payment_method"] = "Unknown"
+
+    if "user_phone" not in df.columns:
+        df["user_phone"] = ""
+
+    return df
+
+
+def make_petpooja_duplicate_key(row, phone):
+    date = str(row.get("Date", row.get("date_parsed", ""))).strip()
+    order_no = str(row.get("Order No.", row.get("Order No", ""))).strip()
+    total = str(row.get("petpooja_total", "")).strip()
+    payment = str(row.get("payment_method", "")).strip().lower()
+    return f"{clean_phone(phone)}|{date}|{order_no}|{total}|{payment}"
+
+
+def filter_date(df, date_col, date_filter, start_date, end_date):
+    if df.empty or date_filter == "No Filter":
+        return df
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    return df[(df[date_col].dt.date >= start_date) & (df[date_col].dt.date <= end_date)].copy()
+
+
+def filter_by_phone(df, phone):
+    if df.empty:
+        return df
+    if "user_phone" not in df.columns:
+        df["user_phone"] = ""
+    phone_clean = clean_phone(phone)
+    df["user_phone_clean"] = df["user_phone"].astype(str).apply(clean_phone)
+    return df[df["user_phone_clean"] == phone_clean].copy()
+
+
+def metric_card(label, value, icon, bg, color):
+    st.markdown(
+        f'''
+        <div style="background:white; border:1px solid #E2E8F0; border-radius:18px; padding:22px; display:flex; gap:18px; align-items:center; box-shadow:0 8px 24px rgba(15,23,42,0.05);">
+            <div style="background:{bg}; color:{color}; width:62px; height:62px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:30px; font-weight:900;">{icon}</div>
+            <div>
+                <div style="color:#64748B; font-size:14px; font-weight:700;">{label}</div>
+                <div style="color:{color}; font-size:30px; font-weight:900;">₹{value:,.2f}</div>
+            </div>
+        </div>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+
+
+def send_password_reset_code(phone):
+    code = str(random.randint(100000, 999999))
+
+    to_number = f"whatsapp:+{clean_phone(phone)}"
+
+    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+    client.messages.create(
+        from_=TWILIO_WHATSAPP_FROM,
+        to=to_number,
+        body=f"Your FinWise password reset code is: {code}. This code expires in 10 minutes."
+    )
+
+    st.session_state.reset_code = code
+    st.session_state.reset_phone = clean_phone(phone)
+    st.session_state.reset_code_expiry = time.time() + 600
+    st.write("Sending OTP to:", to_number)
+    st.write("Sending from:", TWILIO_WHATSAPP_FROM)
+
+    return True
+
+# -----------------------------
+# CSS
+# -----------------------------
+st.markdown("""
+<style>
+.stApp { background:#F8FAFC !important; }
+header { background:white !important; }
+.block-container { padding-top:2rem !important; padding-left:2rem !important; padding-right:2rem !important; max-width:1400px !important; }
+section[data-testid="stSidebar"] { background:#FFFFFF !important; border-right:1px solid #E5E7EB; }
+h1,h2,h3,h4,p,label,span { color:#0F172A !important; }
+.stButton button { border-radius:12px !important; background:#2563EB !important; color:white !important; font-weight:700 !important; border:none !important; }
+div[data-testid="stFileUploader"] { background:#FFFFFF; border:1px dashed #CBD5E1; border-radius:16px; padding:12px; }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+
+/* Main app background */
+.stApp {
+    background: linear-gradient(
+        135deg,
+        #F0F9FF 0%,
+        #DBEAFE 45%,
+        #DCFCE7 100%
+    ) !important;
+}
+
+/* Main content area */
+.main .block-container {
+    background: rgba(255,255,255,0.72);
+    padding: 2rem 2.5rem;
+    border-radius: 24px;
+    backdrop-filter: blur(10px);
+    box-shadow: 0 12px 40px rgba(15,23,42,0.05);
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(
+        180deg,
+        #EFF6FF 0%,
+        #ECFDF5 100%
+    ) !important;
+    border-right: 1px solid #BFDBFE;
+}
+
+/* Titles */
+h1, h2, h3 {
+    color: #0F172A !important;
+    font-weight: 850 !important;
+    letter-spacing: -0.4px;
+}
+
+/* Metrics cards */
+[data-testid="stMetric"] {
+    background: rgba(255,255,255,0.78);
+    border: 1px solid #BFDBFE;
+    border-radius: 22px;
+    padding: 20px;
+    box-shadow: 0 10px 30px rgba(15,23,42,0.05);
+}
+
+/* Tables */
+.stDataFrame {
+    background: rgba(255,255,255,0.82);
+    border-radius: 18px;
+    border: 1px solid #BFDBFE;
+    overflow: hidden;
+}
+
+/* Upload section */
+[data-testid="stFileUploader"] {
+    background: rgba(255,255,255,0.82);
+    border: 1px solid #BFDBFE;
+    border-radius: 18px;
+    padding: 16px;
+}
+
+/* Selectbox */
+.stSelectbox > div > div {
+    background: rgba(255,255,255,0.88);
+    border-radius: 14px;
+    border: 1px solid #BFDBFE;
+}
+
+/* Buttons */
+.stButton button {
+    border-radius: 14px !important;
+    border: none !important;
+    background: linear-gradient(
+        90deg,
+        #2563EB,
+        #22C55E
+    ) !important;
+    color: white !important;
+    font-weight: 800 !important;
+    box-shadow: 0 8px 24px rgba(37,99,235,0.18);
+}
+
+/* Expanders for screen 2 */
+.streamlit-expanderHeader {
+    background: rgba(255,255,255,0.75) !important;
+    border-radius: 14px !important;
+    border: 1px solid #BFDBFE !important;
+    font-weight: 700 !important;
+}
+
+/* Remove harsh white */
+div[data-testid="stVerticalBlock"] > div {
+    border-radius: 18px;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+#MainMenu {
+    visibility: hidden;
+}
+
+footer {
+    visibility: hidden;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# -----------------------------
+# Login state
+# -----------------------------
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "user_phone" not in st.session_state:
+    st.session_state.user_phone = ""
+
+# -----------------------------
+# Login page
+# -----------------------------
+if not st.session_state.logged_in:
+    st.markdown("""
+    <style>
+    header {visibility:hidden;}
+    .stApp {
+    background: linear-gradient(
+        135deg,
+        #F0F9FF 0%,
+        #DBEAFE 45%,
+        #DCFCE7 100%
+    ) !important;
+    }
+     
+    .login-title {
+    font-size:42px;
+    font-weight:900;
+    line-height:1.15;
+    color:#0F172A !important;
+    }
+    .login-subtitle { color:#0F172A !important; font-size:17px; line-height:1.5; }
+    label { color:white !important; font-weight:700 !important; }
+    .stTextInput input { height:50px !important; border-radius:12px !important; text-align:center !important; }
+    div[data-testid="stRadio"] { background:rgba(255,255,255,0.95); padding:8px; border-radius:16px; }
+    .stRadio label { color:#0F172A !important; }
+    .better-profit-text {
+    color: #166534 !important;}
+    </style>
+    """, unsafe_allow_html=True)
+    
+    left, right = st.columns([1, 1], gap="large")
+    with left:
+        st.markdown(
+            '<div style="background:linear-gradient(160deg,#2563EB,#38BDF8,#22C55E); padding:36px; border-radius:24px; color:white; min-height:560px;">'
+            '<div style="font-size:34px; font-weight:800; margin-bottom:42px; color:white;">📊 FinWise</div>'
+            '<div class="login-title">Smart bills.<br>Clear insights.<br><span style="display:inline-block; color:#166534 !important;">Better profits.</span></div>'
+            '<div class="login-subtitle" style="margin-top:22px;">Upload bills on WhatsApp and let FinWise organize everything automatically.</div>'
+            '<div style="background:rgba(255,255,255,0.16); border:1px solid rgba(255,255,255,0.22); border-radius:20px; padding:24px; margin-top:40px;">'
+
+            '<div style="font-size:22px; font-weight:900; color:#0F172A; margin-bottom:20px;">Why use FinWise?</div>'
+
+            '<div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">'
+            '<div style="font-size:28px;"> ✅ </div>'
+            '<div>'
+            '<div style="font-size:16px; font-weight:850; color:#0F172A;">Send expense image on whatsapp</div>'
+            '<div style="font-size:13px; color:#334155;">Bills and GPay screenshots on WhatsApp</div>'
+            '</div>'
+            '</div>'
+
+            '<div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">'
+            '<div style="font-size:28px;"> 📋 </div>'
+            '<div>'
+            '<div style="font-size:16px; font-weight:850; color:#0F172A;">Daily closing help</div>'
+            '<div style="font-size:13px; color:#334155;">Track expenses for the day</div>'
+            '</div>'
+            '</div>'
+
+            '<div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">'
+            '<div style="font-size:28px;">📊</div>'
+            '<div>'
+            '<div style="font-size:16px; font-weight:850; color:#0F172A;"> Expense vs Income data with Petpooja Report </div>'
+            '<div style="font-size:13px; color:#334155;">Income and payment summary</div>'
+            '</div>'
+            '</div>'
+
+            '<div style="display:flex; align-items:center; gap:12px;">'
+            '<div style="font-size:28px;">📁</div>'
+            '<div>'
+            '<div style="font-size:16px; font-weight:850; color:#0F172A;">Bill Images Saved in folders</div>'
+            '<div style="font-size:13px; color:#334155;">Images organized by category/vendor</div>'
+            '</div>'
+            '</div>'
+
+            '</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    with right:
+        st.markdown("""
+            <style>
+
+            .login-title {
+                color:white !important;
+            }
+
+            .login-subtitle {
+                color:black !important;
+            }
+
+            </style>
+            """, unsafe_allow_html=True)
+        st.markdown(
+            """
+            <h1 class="login-title">
+                Welcome Back!
+            </h1>
+
+            <p class="login-subtitle">
+                Login to access your FinWise dashboard
+            </p>
+            """,
+            unsafe_allow_html=True
+        )
+        auth_mode = st.radio("Choose option", ["Login", "Register", "Forgot Password"], horizontal=True, label_visibility="collapsed")
+        phone_input = st.text_input("WhatsApp phone number", placeholder="+91 98765 43210")
+
+        if auth_mode in ["Login", "Register"]:
+            password_input = st.text_input("Password", type="password", placeholder="Enter password")
+
+        if auth_mode == "Login":
+            if st.button("Login", type="primary", use_container_width=True):
+                if validate_login(phone_input, password_input):
+                    st.session_state.logged_in = True
+                    st.session_state.user_phone = clean_phone(phone_input)
+                    st.rerun()
+                else:
+                    st.error("Invalid phone number or password.")
+        elif auth_mode == "Register":
+            if st.button("Create Account", type="primary", use_container_width=True):
+                if not phone_input or not password_input:
+                    st.error("Enter phone number and password.")
+                else:
+                    success, message = register_user(phone_input, password_input)
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+        else:
+            st.info("We will send a 6-digit reset code to your WhatsApp number.")
+
+            if st.button("Send WhatsApp Code", type="primary", use_container_width=True):
+                if not phone_input:
+                    st.error("Enter your WhatsApp phone number.")
+                else:
+                    try:
+                        send_password_reset_code(phone_input)
+                        st.success("Reset code sent to your WhatsApp.")
+                    except Exception as e:
+                        st.error(f"Could not send WhatsApp code. Error: {str(e)}")
+
+            reset_code_input = st.text_input(
+                "Enter WhatsApp Code",
+                placeholder="Enter 6-digit code"
+            )
+
+            new_password = st.text_input(
+                "New Password",
+                type="password",
+                placeholder="Enter new password"
+            )
+
+            if st.button("Reset Password", use_container_width=True):
+                if not phone_input or not reset_code_input or not new_password:
+                    st.error("Enter phone number, WhatsApp code, and new password.")
+
+                elif "reset_code" not in st.session_state:
+                    st.error("Please request a WhatsApp code first.")
+
+                elif time.time() > st.session_state.get("reset_code_expiry", 0):
+                    st.error("Reset code expired. Please request a new code.")
+
+                elif clean_phone(phone_input) != st.session_state.get("reset_phone", ""):
+                    st.error("Phone number does not match the reset code.")
+
+                elif reset_code_input.strip() != st.session_state.get("reset_code", ""):
+                    st.error("Invalid WhatsApp code.")
+
+                else:
+                    success, message = reset_password(phone_input, new_password)
+
+                    if success:
+                        st.success("Password reset successfully. Please login.")
+
+                        st.session_state.pop("reset_code", None)
+                        st.session_state.pop("reset_phone", None)
+                        st.session_state.pop("reset_code_expiry", None)
+                    else:
+                        st.error(message)
+
+        st.markdown('<div style="text-align:center;color:black;font-weight:700;margin-top:26px;">🛡️ Your data is secure and organized privately.</div>', unsafe_allow_html=True)
+    st.stop()
+
+
+
+# -----------------------------
+# Header
+# -----------------------------
+whatsapp_number = "+14155238886"
+whatsapp_link = f"https://wa.me/{whatsapp_number.replace('+', '')}"
+phone = st.session_state.user_phone
+
+top_left, top_right = st.columns([1.1, 1])
+with top_left:
+    st.markdown(
+        '<div style="padding:10px 0 18px 0;">'
+        '<h1 style="color:#0F172A; font-size:38px; margin:0; font-weight:850;">📊 FinWise Bills</h1>'
+        '<p style="color:#475569; font-size:17px; margin-top:10px; line-height:1.5; max-width:520px;">WhatsApp bills, Petpooja reports, GPay screenshots and expenses in one dashboard.</p>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+with top_right:
+    st.markdown(
+        '<div style="background:white; border:1px solid #E2E8F0; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">'
+        '<div style="display:flex; gap:16px; align-items:center;">'
+        '<div style="background:#DCFCE7; color:#16A34A; width:54px; height:54px; border-radius:16px; display:flex; align-items:center; justify-content:center; font-size:30px; font-weight:800;">📞</div>'
+        '<div style="flex:1;"><div style="font-size:18px; font-weight:800; color:#0F172A;">Send bills on WhatsApp</div>'
+        '<div style="font-size:14px; color:#475569; line-height:1.4; margin-top:4px;">Send bill images, GPay screenshots, or expense messages to FinWise at +14155238886.</div></div>'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.link_button("🟢 Open WhatsApp", whatsapp_link, use_container_width=True)
+
+screen = st.sidebar.radio("Go to", ["Screen 1 - Extracted Data", "Screen 2 - Folder View"])
+
+with st.sidebar:
+    st.markdown(f"Logged in as: {phone}")
+
+    if st.button("Logout", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.user_phone = ""
+        st.rerun()
+    st.markdown("---")
+
+    st.markdown("### 📚 Quick Training")
+
+    st.markdown(
+        """
+        <a href="#" target="_blank" style="
+            text-decoration:none;
+            font-size:16px;
+            font-weight:600;
+            color:#2563EB;
+        ">
+            ▶️ Watch 3-Minute Setup Guide
+        </a>
+        """,
+        unsafe_allow_html=True,
+)
+
+# -----------------------------
+# Screen 1
+# -----------------------------
+if screen == "Screen 1 - Extracted Data":
+    from datetime import date, timedelta
+
+    date_filter = st.selectbox(
+        "Select timeframe",
+        ["No Filter", "Today", "Last 7 Days", "This Month", "Custom Range"],
+        index=0,
+        key="screen1_date_filter",
+    )
+
+    today = pd.Timestamp.today().date()
+    start_date = today
+    end_date = today
+
+    if date_filter == "Today":
+        start_date = today
+        end_date = today
+
+    elif date_filter == "Last 7 Days":
+        start_date = today - pd.Timedelta(days=7)
+        end_date = today
+
+    elif date_filter == "This Month":
+        start_date = today.replace(day=1)
+        end_date = today
+
+    elif date_filter == "Custom Range":
+        default_end = date.today()
+        default_start = default_end - timedelta(days=30)
+
+        custom_dates = st.date_input(
+            "Select custom range",
+            value=(default_start, default_end),
+            key="screen1_custom_date_range"
+        )
+
+        if isinstance(custom_dates, tuple) and len(custom_dates) == 2:
+            start_date, end_date = custom_dates
+
+        elif isinstance(custom_dates, tuple) and len(custom_dates) == 1:
+            start_date = custom_dates[0]
+            end_date = custom_dates[0]
+
+        else:
+            start_date = custom_dates
+            end_date = custom_dates
+    
+
+    # WhatsApp entries
+    df = load_entries()
+    df = filter_by_phone(df, phone)
+
+    if not df.empty:
+        if "vendor" in df.columns:
+            df = df[~df["vendor"].astype(str).str.lower().str.contains("petpooja", na=False)]
+        if "description" in df.columns:
+            df = df[~df["description"].astype(str).str.lower().str.contains("petpooja", na=False)]
+        if "source" in df.columns:
+            df = df[df["source"].astype(str).str.lower() != "petpooja"]
+
+        df["date_parsed"] = pd.to_datetime(df.get("date", ""), errors="coerce")
+        df["total"] = pd.to_numeric(df.get("total", 0), errors="coerce").fillna(0)
+        df = filter_date(df, "date_parsed", date_filter, start_date, end_date)
+
+    
+
+    # Saved Petpooja entries
+    petpooja_saved_df = normalize_saved_petpooja_df(load_petpooja_entries())
+    if not petpooja_saved_df.empty:
+        petpooja_saved_df = petpooja_saved_df[
+            petpooja_saved_df["user_phone"].astype(str).apply(clean_phone) == clean_phone(phone)
+        ].copy()
+        petpooja_saved_df = filter_date(petpooja_saved_df, "date_parsed", date_filter, start_date, end_date)
+        petpooja_filtered_income = petpooja_saved_df["petpooja_total"].sum()
+    else:
+        petpooja_saved_df = pd.DataFrame()
+        petpooja_filtered_income = 0.0
+
+    # Totals
+    if not df.empty:
+        whatsapp_income = df.loc[df["transaction_type"].astype(str).str.lower() == "income", "total"].sum() if "transaction_type" in df.columns else 0.0
+        total_expense = df.loc[df["transaction_type"].astype(str).str.lower() == "expense", "total"].sum() if "transaction_type" in df.columns else df["total"].sum()
+    else:
+        whatsapp_income = 0.0
+        total_expense = 0.0
+
+    total_income = whatsapp_income + petpooja_filtered_income
+    net_amount = total_income - total_expense
+
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        metric_card("Total Income", total_income, "↗", "#DCFCE7", "#16A34A")
+    with m2:
+        metric_card("Total Expenses", total_expense, "↘", "#FEE2E2", "#DC2626")
+    with m3:
+        metric_card("Net", net_amount, "💼", "#DBEAFE", "#2563EB")
+
+
+    st.write("### Expenses from WhatsApp")
+
+    if df.empty:
+        st.info("No WhatsApp expenses found for this phone number or selected timeframe.")
+    else:
+        original_df = df.reset_index(drop=True).copy()
+
+        display_df = pd.DataFrame()
+
+        display_df["Expense Number"] = [
+            f"EXP-{i:05d}" for i in range(1, len(original_df) + 1)
+        ]
+
+        display_df["Date"] = original_df.get("date", "")
+        display_df["Type"] = original_df.get("transaction_type", "")
+        display_df["Vendor"] = original_df.get("vendor", "")
+        display_df["Description"] = original_df.get("description", "")
+        display_df["Category"] = original_df.get("category", "")
+        display_df["Amount"] = pd.to_numeric(
+            original_df.get("total", 0),
+            errors="coerce"
+        ).fillna(0)
+
+        edited_df = st.data_editor(
+            display_df,
+            use_container_width=True,
+            num_rows="fixed",
+            hide_index=False,
+            height=360,
+            key="screen1_expense_editor",
+            column_config={
+                "Category": st.column_config.SelectboxColumn(
+                    "Category",
+                    options=[
+                        "Grocery",
+                        "Gas",
+                        "Internet",
+                        "Utilities",
+                        "Meals",
+                        "Rent",
+                        "Software",
+                        "Office Supplies",
+                        "Vehicle",
+                        "Professional Fees",
+                        "Insurance",
+                        "Travel",
+                        "Income",
+                        "Uncategorized",
+                    ],
+                    required=True,
+                )
+            }
+        )
+
+        if st.button("💾 Save Category Changes", type="primary", use_container_width=True):
+            all_entries_df = load_entries()
+
+            for i, row in edited_df.iterrows():
+                new_category = str(row.get("Category", "")).strip()
+
+                if not new_category:
+                    continue
+
+                original_row = original_df.iloc[i]
+                original_id = original_row.get("id", None)
+                vendor = original_row.get("vendor", "")
+
+                if original_id is not None and "id" in all_entries_df.columns:
+                    mask = all_entries_df["id"].astype(str) == str(original_id)
+                else:
+                    mask = (
+                        (all_entries_df["user_phone"].astype(str).apply(clean_phone) == clean_phone(phone)) &
+                        (all_entries_df["vendor"].astype(str) == str(vendor)) &
+                        (all_entries_df["date"].astype(str) == str(original_row.get("date", ""))) &
+                        (all_entries_df["total"].astype(str) == str(original_row.get("total", "")))
+                    )
+
+                all_entries_df.loc[mask, "category"] = new_category
+                all_entries_df.loc[mask, "folder"] = new_category
+
+                update_vendor_memory(
+                    user_phone=phone,
+                    vendor=vendor,
+                    category=new_category,
+                    folder=new_category,
+                )
+
+            save_entries(all_entries_df)
+
+            st.success("Category changes saved. Screen 2 folder view updated.")
+            st.rerun()
+
+    st.write("### Petpooja Sales Summary")
+    st.metric("Petpooja Total Sales", f"₹{petpooja_filtered_income:,.2f}")
+
+    # Upload Petpooja first, then reload saved file
+    st.write("### Upload Petpooja Daily/Monthly Sales Summary")
+    uploaded_sales_file = st.file_uploader("Upload Petpooja Daily/Monthly Sales Summary", type=["xls", "xlsx", "html"])
+
+    if uploaded_sales_file is not None:
+        try:
+            raw_sales_df = read_petpooja_file(uploaded_sales_file)
+            petpooja_report_df = build_petpooja_report_df(raw_sales_df)
+
+            if petpooja_report_df.empty:
+                st.warning("Could not find Petpooja order rows in this report.")
+            else:
+                petpooja_report_df["user_phone"] = clean_phone(phone)
+                petpooja_report_df["duplicate_key"] = petpooja_report_df.apply(
+                    lambda row: make_petpooja_duplicate_key(row, phone), axis=1
+                )
+
+                existing_petpooja_df = normalize_saved_petpooja_df(load_petpooja_entries())
+                existing_keys = set(existing_petpooja_df["duplicate_key"].astype(str)) if not existing_petpooja_df.empty and "duplicate_key" in existing_petpooja_df.columns else set()
+
+                new_petpooja_df = petpooja_report_df[
+                    ~petpooja_report_df["duplicate_key"].astype(str).isin(existing_keys)
+                ].copy()
+                duplicate_count = len(petpooja_report_df) - len(new_petpooja_df)
+
+                if not new_petpooja_df.empty:
+                    updated_petpooja_df = pd.concat([existing_petpooja_df, new_petpooja_df], ignore_index=True)
+                    save_petpooja_entries(updated_petpooja_df)
+
+                st.success(f"Petpooja processed. Added {len(new_petpooja_df)} new records. Skipped {duplicate_count} duplicates.")
+        except Exception as e:
+            st.error(f"Could not read Petpooja file: {e}")
+
+    if not petpooja_saved_df.empty:
+        payment_summary = (
+            petpooja_saved_df.groupby("payment_method")["petpooja_total"]
+            .sum()
+            .reset_index()
+            .sort_values("petpooja_total", ascending=False)
+        )
+        st.write("### Petpooja Payment Summary")
+        payment_summary = payment_summary.reset_index(drop=True)
+
+        st.dataframe(
+            payment_summary,
+            use_container_width=True
+        )
+
+        with st.expander("Preview Petpooja Report"):
+            petpooja_preview_df = petpooja_saved_df.reset_index(drop=True).copy()
+
+            if "Date" in petpooja_preview_df.columns:
+                petpooja_preview_df["Date"] = pd.to_datetime(
+                    petpooja_preview_df["Date"],
+                    errors="coerce",
+                    dayfirst=True
+                ).dt.strftime("%d-%b-%Y")
+
+            available_petpooja_columns = [
+                col for col in PETPOOJA_INPUT_COLUMNS
+                if col in petpooja_preview_df.columns
+            ]
+
+            st.dataframe(
+                petpooja_preview_df[available_petpooja_columns],
+                use_container_width=True,
+                hide_index=True
+            )
+
+    output = BytesIO()
+    export_df = df.drop(columns=["user_phone_clean","id", "date_parsed", "transaction_type", "user_phone", "category", "subtotal", "tax", "currency", "confidence", "reason", "image_path", "created_at", "payment_method", "source", "duplicate_key" ], errors="ignore")
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+
+
+        export_df = export_df.reset_index(drop=True)
+        
+        export_df.insert(
+            0,
+            "Expense Number",
+            [f"EXP-{i:05d}" for i in range(1, len(export_df) + 1)]
+        )
+
+        export_df.to_excel(writer, index=False, sheet_name="WhatsApp Expenses")
+        if not petpooja_saved_df.empty:
+            petpooja_saved_df.drop(columns=["date_parsed"], errors="ignore").to_excel(writer, index=False, sheet_name="Petpooja Sales")
+        pd.DataFrame([
+            {"Metric": "Total Income", "Amount": total_income},
+            {"Metric": "Total Expense", "Amount": total_expense},
+            {"Metric": "Net", "Amount": net_amount},
+        ]).to_excel(writer, index=False, sheet_name="Totals")
+    output.seek(0)
+    st.download_button("⬇️ Download Excel", data=output, file_name="finwise_extracted_bills.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+elif screen == "Screen 2 - Folder View":
+
+    st.subheader("📁 File Explorer")
+
+    df = load_entries()
+    df = filter_by_phone(df, phone)
+
+    if df.empty:
+        st.info("No bills found for this phone number.")
+        st.stop()
+
+    df["total"] = pd.to_numeric(df.get("total", 0), errors="coerce").fillna(0)
+
+    st.caption("Open a category folder, then open a vendor folder to view bills.")
+
+    for folder in DEFAULT_FOLDERS:
+
+        folder_df = df[df["folder"] == folder].copy() if "folder" in df.columns else pd.DataFrame()
+
+        if folder_df.empty:
+            continue
+
+        folder_total = folder_df["total"].sum()
+        folder_count = len(folder_df)
+
+        with st.expander(f"📁 {folder}  •  {folder_count} bills  •  ₹{folder_total:,.2f}"):
+
+            vendors = sorted(
+                folder_df["vendor"].fillna("Unknown Vendor").astype(str).unique()
+            )
+
+            for vendor in vendors:
+
+                vendor_df = folder_df[
+                    folder_df["vendor"].fillna("Unknown Vendor").astype(str) == vendor
+                ].copy()
+
+                vendor_total = vendor_df["total"].sum()
+                vendor_count = len(vendor_df)
+
+                with st.expander(f"🏪 {vendor}  •  {vendor_count} bills  •  ₹{vendor_total:,.2f}"):
+
+                    for _, row in vendor_df.iterrows():
+
+                        bill_date = row.get("date", "")
+                        description = row.get("description", "")
+                        total = row.get("total", 0)
+                        image_path = row.get("image_path", "")
+
+                        st.markdown(
+                            f"""
+                            <div style="
+                                background:white;
+                                border:1px solid #E2E8F0;
+                                border-radius:14px;
+                                padding:16px;
+                                margin-bottom:12px;
+                            ">
+                                <div style="font-weight:800; font-size:16px;">
+                                    🧾 {description if description else "Bill"}
+                                </div>
+                                <div style="color:#64748B; margin-top:6px;">
+                                    Date: {bill_date} &nbsp; | &nbsp; Amount: ₹{total:,.2f}
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                        if image_path and os.path.exists(image_path):
+                            with st.expander("View bill image"):
+                                st.image(image_path, width=450)
+                        else:
+                            st.caption("No image available.")
+
+                        st.divider()
+
+# -----------------------------
+# Footer
+# -----------------------------
+st.divider()
+st.markdown(
+    '<div style="background:#F8FAFC; border:1px solid #E5E7EB; padding:18px; border-radius:14px; margin-top:30px;">'
+    '<h4 style="margin-bottom:8px;">Support & Feedback</h4>'
+    '<p style="margin-bottom:6px;">Need help or want to share feedback?</p>'
+    '<p style="margin-bottom:6px;"><strong>Email:</strong> aims.weautomate@gmail.com</p>'
+    '<p style="margin-bottom:0;"><strong>WhatsApp:</strong> +14373241463</p>'
+    '</div>',
+    unsafe_allow_html=True,
+)

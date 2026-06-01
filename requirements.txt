@@ -1,0 +1,10 @@
+flask
+twilio
+python-dotenv
+openai
+pillow
+pandas
+openpyxl
+streamlit
+requests
+xlrd
