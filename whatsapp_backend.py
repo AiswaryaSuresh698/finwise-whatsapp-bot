@@ -85,11 +85,23 @@ def is_duplicate_expense(duplicate_key):
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
+
+    print("\n========== NEW WHATSAPP REQUEST ==========")
+
+    from_number = request.form.get("From")
+    body = request.form.get("Body")
+    media_count = request.form.get("NumMedia")
+
+    print("From:", from_number)
+    print("Body:", body)
+    print("Media count:", media_count)
+
     response = MessagingResponse()
 
-    num_media = int(request.form.get("NumMedia", 0))
-    incoming_msg = request.form.get("Body", "").strip()
-    from_number = request.form.get("From", "")
+    from_number = request.form.get("From", "").replace("whatsapp:", "")
+    body = request.form.get("Body", "").strip()
+    incoming_msg = body
+    num_media = media_count
 
     allowed_categories = [
         "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
