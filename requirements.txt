@@ -10,3 +10,5 @@ requests
 xlrd
 qrcode
 gunicorn
+gspread
+google-auth

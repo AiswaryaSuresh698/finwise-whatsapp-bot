@@ -6,7 +6,9 @@ from datetime import datetime
 import os
 import pandas as pd
 import hashlib
-
+import json
+import gspread
+from google.oauth2.service_account import Credentials
 
 
 BASE_DIR = "finwise_storage"
@@ -89,26 +91,24 @@ def save_image_to_folder(image_bytes: bytes, folder: str, vendor: str, ext: str 
     return image_path
 
 
-def append_entry(entry: dict):
-    ensure_storage()
+def append_entry(entry):
+    df = load_entries()
+    new_row = pd.DataFrame([entry])
 
-    df = pd.read_csv(CSV_PATH)
+    if df.empty:
+        df = new_row
+    else:
+        df = pd.concat([df, new_row], ignore_index=True)
 
-    entry["id"] = uuid.uuid4().hex
-    entry["created_at"] = datetime.now().isoformat(timespec="seconds")
-
-    df = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
-    df.to_csv(CSV_PATH, index=False)
-
-
-def load_entries() -> pd.DataFrame:
-    ensure_storage()
-    return pd.read_csv(CSV_PATH)
+    save_entries(df)
 
 
-def save_entries(df: pd.DataFrame):
-    ensure_storage()
-    df.to_csv(CSV_PATH, index=False)
+def load_entries():
+    return read_sheet("entries")
+
+
+def save_entries(df):
+    write_sheet("entries", df)
 
 
 def list_folder_images(folder: str):
@@ -153,14 +153,11 @@ def ensure_users_file():
             index=False
         )
 
-
 def load_users():
-    ensure_users_file()
+    df = read_sheet("users")
 
-    try:
-        df = pd.read_csv(USERS_PATH)
-    except Exception:
-        df = pd.DataFrame(columns=["phone", "password_hash"])
+    if df.empty:
+        return pd.DataFrame(columns=["phone", "password_hash"])
 
     if "phone" not in df.columns:
         df["phone"] = ""
@@ -174,8 +171,7 @@ def load_users():
 
 
 def save_users(df):
-    ensure_users_file()
-    df.to_csv(USERS_PATH, index=False)
+    write_sheet("users", df)
 
 
 def register_user(phone: str, password: str):
@@ -299,6 +295,78 @@ def reset_password(phone: str, new_password: str):
 PETPOOJA_FILE = "data/petpooja_sales.csv"
 VENDOR_RULES_FILE = "data/vendor_rules.csv"
 
+def get_secret_value(key):
+    value = os.getenv(key)
+    if value:
+        return value
+
+    try:
+        import streamlit as st
+        return st.secrets.get(key)
+    except Exception:
+        return None
+
+
+def get_google_sheet():
+    google_sheet_id = get_secret_value("GOOGLE_SHEET_ID")
+    service_account_json = get_secret_value("GOOGLE_SERVICE_ACCOUNT_JSON")
+
+    if not google_sheet_id or not service_account_json:
+        return None
+
+    if isinstance(service_account_json, str):
+        service_account_info = json.loads(service_account_json)
+    else:
+        service_account_info = dict(service_account_json)
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    credentials = Credentials.from_service_account_info(
+        service_account_info,
+        scopes=scopes
+    )
+
+    client = gspread.authorize(credentials)
+    return client.open_by_key(google_sheet_id)
+
+
+def read_sheet(tab_name):
+    sheet = get_google_sheet()
+
+    if sheet is None:
+        return pd.DataFrame()
+
+    try:
+        worksheet = sheet.worksheet(tab_name)
+        records = worksheet.get_all_records()
+        return pd.DataFrame(records)
+    except Exception:
+        return pd.DataFrame()
+
+
+def write_sheet(tab_name, df):
+    sheet = get_google_sheet()
+
+    if sheet is None:
+        return
+
+    try:
+        worksheet = sheet.worksheet(tab_name)
+    except Exception:
+        worksheet = sheet.add_worksheet(title=tab_name, rows=1000, cols=50)
+
+    worksheet.clear()
+
+    if df.empty:
+        return
+
+    df = df.fillna("").astype(str)
+
+    worksheet.update([df.columns.tolist()] + df.values.tolist())
+
 
 def normalize_vendor(vendor):
     return str(vendor or "").strip().lower()
@@ -309,9 +377,9 @@ def make_vendor_memory_key(user_phone, vendor):
 
 
 def load_vendor_rules():
-    ensure_storage()
+    df = read_sheet("vendor_rules")
 
-    if not os.path.exists(VENDOR_RULES_FILE):
+    if df.empty:
         return pd.DataFrame(
             columns=[
                 "memory_key",
@@ -321,8 +389,6 @@ def load_vendor_rules():
                 "folder",
             ]
         )
-
-    df = pd.read_csv(VENDOR_RULES_FILE)
 
     if "memory_key" not in df.columns:
         df["memory_key"] = df.apply(
@@ -336,9 +402,9 @@ def load_vendor_rules():
     return df
 
 
+
 def save_vendor_rules(df):
-    ensure_storage()
-    df.to_csv(VENDOR_RULES_FILE, index=False)
+    write_sheet("vendor_rules", df)
 
 
 def update_vendor_memory(user_phone, vendor, category, folder):
@@ -394,15 +460,11 @@ def apply_vendor_memory(user_phone, vendor):
 
 
 def load_petpooja_entries():
-    ensure_storage()
-
-    if not os.path.exists(PETPOOJA_FILE):
-        return pd.DataFrame()
-
-    return pd.read_csv(PETPOOJA_FILE)
+    return read_sheet("petpooja_entries")
 
 
 def save_petpooja_entries(df):
-    ensure_storage()
-    df.to_csv(PETPOOJA_FILE, index=False)
+    write_sheet("petpooja_entries", df)
+
+
     

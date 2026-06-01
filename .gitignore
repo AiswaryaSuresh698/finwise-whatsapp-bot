@@ -6,3 +6,5 @@ data/
 finwise_storage/
 
 *.pyc
+google_sheet_json
+*.json
