@@ -8,3 +8,4 @@ openpyxl
 streamlit
 requests
 xlrd
+qrcode
