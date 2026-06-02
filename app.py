@@ -366,8 +366,15 @@ footer {
 # -----------------------------
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
+
 if "user_phone" not in st.session_state:
     st.session_state.user_phone = ""
+
+query_params = st.query_params
+
+if query_params.get("logged_in") == "true" and query_params.get("phone"):
+    st.session_state.logged_in = True
+    st.session_state.user_phone = query_params.get("phone")
 
 # -----------------------------
 # Login page
@@ -485,6 +492,10 @@ if not st.session_state.logged_in:
                 if validate_login(phone_input, password_input):
                     st.session_state.logged_in = True
                     st.session_state.user_phone = clean_phone(phone_input)
+
+                    st.query_params["logged_in"] = "true"
+                    st.query_params["phone"] = clean_phone(phone_input)
+
                     st.rerun()
                 else:
                     st.error("Invalid phone number or password.")
@@ -588,10 +599,17 @@ screen = st.sidebar.radio("Go to", ["Screen 1 - Extracted Data", "Screen 2 - Fol
 with st.sidebar:
     st.markdown(f"Logged in as: {phone}")
 
-    if st.button("Logout", use_container_width=True):
+    if st.sidebar.button("Logout", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.user_phone = ""
+
+        st.query_params.clear()
+
         st.rerun()
+    
+    if st.sidebar.button("🔄 Refresh Data", use_container_width=True):
+        st.rerun()
+
     st.markdown("---")
 
     st.markdown("### 📚 Quick Training")
