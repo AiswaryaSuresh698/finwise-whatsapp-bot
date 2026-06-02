@@ -2,6 +2,9 @@ import os
 import requests
 from io import BytesIO
 import json
+from storage_utils import read_sheet, write_sheet
+import pandas as pd
+
 
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
@@ -35,27 +38,50 @@ client = get_client(OPENAI_API_KEY)
 PENDING_CATEGORY_FILE = "data/pending_category.json"
 
 
+
+
 def load_pending_category():
-    if not os.path.exists(PENDING_CATEGORY_FILE):
+    df = read_sheet("pending_category")
+
+    if df.empty:
         return {}
 
-    with open(PENDING_CATEGORY_FILE, "r") as f:
-        return json.load(f)
+    pending = {}
+
+    for _, row in df.iterrows():
+        phone = str(row.get("phone", "")).strip()
+        entry_json = row.get("entry_json", "")
+
+        if phone and entry_json:
+            try:
+                pending[phone] = json.loads(entry_json)
+            except Exception:
+                pass
+
+    return pending
 
 
-def save_pending_category(data):
-    with open(PENDING_CATEGORY_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+def save_pending_category(pending):
+    rows = []
+
+    for phone, entry in pending.items():
+        rows.append({
+            "phone": str(phone),
+            "entry_json": json.dumps(entry)
+        })
+
+    df = pd.DataFrame(rows)
+    write_sheet("pending_category", df)
 
 
 def clear_pending_category(phone):
-    data = load_pending_category()
+    pending = load_pending_category()
     phone = str(phone)
 
-    if phone in data:
-        del data[phone]
+    if phone in pending:
+        del pending[phone]
 
-    save_pending_category(data)
+    save_pending_category(pending)
 
 
 @app.route("/", methods=["GET"])
@@ -166,6 +192,8 @@ def whatsapp():
 
     print("Media URL:", media_url)
     print("Media Type:", media_type)
+
+    
 
     if not media_url:
         response.message("Please upload a bill image.")
