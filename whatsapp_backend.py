@@ -111,24 +111,19 @@ def is_duplicate_expense(duplicate_key):
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
-
-    print("\n========== NEW WHATSAPP REQUEST ==========")
-
-    from_number = request.form.get("From")
-    body = request.form.get("Body")
-    media_count = request.form.get("NumMedia")
-    print("Reached media processing section")
-
-    print("From:", from_number)
-    print("Body:", body)
-    print("Media count:", media_count)
-
     response = MessagingResponse()
 
-    from_number = request.form.get("From", "").replace("whatsapp:", "")
-    body = request.form.get("Body", "").strip()
-    incoming_msg = body
-    num_media = media_count
+    print("\n========== NEW WHATSAPP REQUEST ==========", flush=True)
+
+    raw_from = request.form.get("From", "")
+    from_number = raw_from.replace("whatsapp:", "")
+    incoming_msg = request.form.get("Body", "").strip()
+    num_media = int(request.form.get("NumMedia", "0") or 0)
+
+    print("From:", raw_from, flush=True)
+    print("Clean From:", from_number, flush=True)
+    print("Body:", incoming_msg, flush=True)
+    print("Media count:", num_media, flush=True)
 
     allowed_categories = [
         "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
@@ -136,19 +131,18 @@ def whatsapp():
         "Insurance", "Travel", "Income", "Uncategorized"
     ]
 
-    # TEXT MESSAGE: category reply or normal hello
     if num_media == 0:
         pending = load_pending_category()
         phone_key = str(from_number)
+
+        print("Checking pending for:", phone_key, flush=True)
+        print("Pending keys:", list(pending.keys()), flush=True)
 
         if phone_key in pending:
             category = incoming_msg.title()
 
             if not category:
-                response.message(
-                    "Please reply with a valid category.\n"
-                    "Example: Grocery, Gas, Meals, Utilities."
-                )
+                response.message("Please reply with a valid category. Example: Grocery, Gas, Meals, Utilities.")
                 return str(response)
 
             if category not in allowed_categories:
@@ -163,6 +157,8 @@ def whatsapp():
             pending_entry = pending[phone_key]
             pending_entry["category"] = category
             pending_entry["folder"] = category
+
+            print("Saving pending entry:", pending_entry, flush=True)
 
             append_entry(pending_entry)
 
@@ -186,31 +182,35 @@ def whatsapp():
         response.message("Send a bill/receipt image here.")
         return str(response)
 
-    # IMAGE MESSAGE
     media_url = request.form.get("MediaUrl0")
     media_type = request.form.get("MediaContentType0", "")
 
-    print("Media URL:", media_url)
-    print("Media Type:", media_type)
-
-    
+    print("Media URL:", media_url, flush=True)
+    print("Media Type:", media_type, flush=True)
 
     if not media_url:
         response.message("Please upload a bill image.")
         return str(response)
 
     try:
+        print("Downloading image...", flush=True)
+
         media_response = requests.get(
             media_url,
             auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
             timeout=30,
         )
+
+        print("Image download status:", media_response.status_code, flush=True)
         media_response.raise_for_status()
 
         image_bytes = media_response.content
         image = Image.open(BytesIO(image_bytes)).convert("RGB")
 
+        print("Calling OpenAI extraction...", flush=True)
         extracted = extract_bill_details(client, image)
+
+        print("Extracted:", extracted, flush=True)
 
         if extracted.get("image_quality") in ["blurry", "unreadable"]:
             response.message(
@@ -257,7 +257,7 @@ def whatsapp():
             "subtotal": extracted.get("subtotal", 0),
             "tax": extracted.get("tax", 0),
             "total": extracted.get("total", 0),
-            "currency": extracted.get("currency", "CAD"),
+            "currency": extracted.get("currency", "INR"),
             "confidence": extracted.get("confidence", "medium"),
             "reason": extracted.get("reason", ""),
             "image_path": image_path,
@@ -269,6 +269,8 @@ def whatsapp():
             pending[str(from_number)] = entry
             save_pending_category(pending)
 
+            print("Saved to pending category:", str(from_number), flush=True)
+
             response.message(
                 f"I found a new vendor and need category confirmation.\n\n"
                 f"Vendor: {entry['vendor']}\n"
@@ -278,7 +280,9 @@ def whatsapp():
             )
             return str(response)
 
+        print("Saving entry directly...", flush=True)
         append_entry(entry)
+        print("Entry saved successfully.", flush=True)
 
         response.message(
             f"Saved bill ✅\n"
@@ -286,12 +290,9 @@ def whatsapp():
             f"Total: ₹{entry['total']}\n"
             f"Category: {entry['category']}"
         )
+        return str(response)
 
     except Exception as e:
+        print("ERROR PROCESSING BILL:", str(e), flush=True)
         response.message(f"Could not process the bill. Error: {str(e)}")
-
-    return str(response)
-
-
-if __name__ == "__main__":
-    app.run(port=5000, debug=True)
+        return str(response)
