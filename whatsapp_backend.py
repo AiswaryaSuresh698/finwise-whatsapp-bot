@@ -22,6 +22,7 @@ from storage_utils import (
     save_image_to_folder,
     ensure_storage,
     apply_vendor_memory,
+    clean_phone,
 )
 
 
@@ -131,11 +132,12 @@ def whatsapp():
 
     raw_from = request.form.get("From", "")
     from_number = raw_from.replace("whatsapp:", "")
+    phone_key = clean_phone(from_number)
     incoming_msg = request.form.get("Body", "").strip()
     num_media = int(request.form.get("NumMedia", "0") or 0)
 
     print("From:", raw_from, flush=True)
-    print("Clean From:", from_number, flush=True)
+    print("Clean From:", phone_key, flush=True)
     print("Body:", incoming_msg, flush=True)
     print("Media count:", num_media, flush=True)
 
@@ -147,7 +149,7 @@ def whatsapp():
 
     if num_media == 0:
         pending = load_pending_category()
-        phone_key = str(from_number)
+        phone_key = clean_phone(from_number)
 
         print("Checking pending for:", phone_key, flush=True)
         print("Pending keys:", list(pending.keys()), flush=True)
@@ -280,10 +282,10 @@ def whatsapp():
 
         if not has_vendor_memory:
             pending = load_pending_category()
-            pending[str(from_number)] = entry
+            pending[phone_key] = entry
             save_pending_category(pending)
 
-            print("Saved to pending category:", str(from_number), flush=True)
+            print("Saved to pending category:", phone_key, flush=True)
 
             send_whatsapp_message(
                 raw_from,
