@@ -4,6 +4,7 @@ from io import BytesIO
 import json
 from storage_utils import read_sheet, write_sheet
 import pandas as pd
+from twilio.rest import Client as TwilioClient
 
 
 from flask import Flask, request
@@ -38,6 +39,19 @@ client = get_client(OPENAI_API_KEY)
 PENDING_CATEGORY_FILE = "data/pending_category.json"
 
 
+twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+
+
+def send_whatsapp_message(to_number, message):
+    if not str(to_number).startswith("whatsapp:"):
+        to_number = f"whatsapp:{to_number}"
+
+    twilio_client.messages.create(
+        from_=TWILIO_WHATSAPP_FROM,
+        to=to_number,
+        body=message
+    )
 
 
 def load_pending_category():
@@ -271,25 +285,29 @@ def whatsapp():
 
             print("Saved to pending category:", str(from_number), flush=True)
 
-            response.message(
+            send_whatsapp_message(
+                raw_from,
                 f"I found a new vendor and need category confirmation.\n\n"
                 f"Vendor: {entry['vendor']}\n"
                 f"Total: ₹{entry['total']}\n\n"
                 f"Which category should I save this under?\n"
                 f"Example: Grocery, Gas, Meals, Utilities."
             )
+
             return str(response)
 
         print("Saving entry directly...", flush=True)
         append_entry(entry)
         print("Entry saved successfully.", flush=True)
 
-        response.message(
+        send_whatsapp_message(
+            raw_from,
             f"Saved bill ✅\n"
             f"Vendor: {entry['vendor']}\n"
             f"Total: ₹{entry['total']}\n"
             f"Category: {entry['category']}"
         )
+
         return str(response)
 
     except Exception as e:
