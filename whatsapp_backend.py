@@ -195,12 +195,14 @@ def whatsapp():
 
             clear_pending_category(uploader_phone)
 
-            response.message(
+            send_whatsapp_message(
+                raw_from,
                 f"Saved bill ✅\n"
                 f"Vendor: {pending_entry.get('vendor', '')}\n"
                 f"Total: ₹{pending_entry.get('total', '')}\n"
                 f"Category saved as: {category}"
             )
+
             return str(response)
 
         response.message("Send a bill/receipt image here.")
