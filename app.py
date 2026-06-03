@@ -1000,46 +1000,48 @@ if screen == "Screen 1 - Extracted Data":
         ).fillna(0)
         display_df["Delete?"] = False
 
-        is_mobile = st.checkbox("Mobile view", value=True, label_visibility="collapsed")
+        is_mobile = st.toggle("📱 Mobile view", value=False)
 
-        if is_mobile:
-            st.markdown(
-                f'<div class="mobile-table">{mobile_table_html(display_df)}</div>',
-                unsafe_allow_html=True
-            )
-            edited_df = display_df
-        else:
-            edited_df = st.data_editor(
-                display_df,
-                use_container_width=True,
-                num_rows="fixed",
-                hide_index=False,
-                height=360,
-                key="screen1_expense_editor",
-                column_config={
-                    "Category": st.column_config.SelectboxColumn(
-                        "Category",
-                        options=[
-                            "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
-                            "Software", "Office Supplies", "Vehicle", "Professional Fees",
-                            "Insurance", "Travel", "Income", "Uncategorized",
-                        ],
-                        required=True,
-                    ),
-                    "Delete?": st.column_config.CheckboxColumn(
-                        "Delete?",
-                        help="Select this to delete the expense",
-                        default=False,
-                    ),
-                }
+        edited_df = st.data_editor(
+            display_df,
+            use_container_width=True,
+            num_rows="fixed",
+            hide_index=True,
+            height=360,
+            key="screen1_expense_editor",
+            column_config={
+                "Category": st.column_config.SelectboxColumn(
+                    "Category",
+                    options=[
+                        "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
+                        "Software", "Office Supplies", "Vehicle", "Professional Fees",
+                        "Insurance", "Travel", "Income", "Uncategorized",
+                    ],
+                    required=True,
+                ),
+                "Amount": st.column_config.NumberColumn(
+                    "Amount",
+                    min_value=0.0,
+                    step=1.0,
+                    format="₹%.2f",
+                ),
+                "Delete?": st.column_config.CheckboxColumn(
+                    "Delete?",
+                    help="Select this to delete the expense",
+                    default=False,
+                ),
+            },
+            disabled=["Expense Number", "Date", "Type", "Vendor", "Description"],
+        )
                 
-            )
-
-        if st.button("💾 Save Category Changes", type="primary", use_container_width=True):
+        if st.button("💾 Save Changes", type="primary", use_container_width=True):
             all_entries_df = load_entries()
 
             for i, row in edited_df.iterrows():
                 new_category = str(row.get("Category", "")).strip()
+                new_amount = pd.to_numeric(row.get("Amount", 0), errors="coerce")
+                if pd.isna(new_amount):
+                    new_amount = 0
 
                 if not new_category:
                     continue
@@ -1060,6 +1062,7 @@ if screen == "Screen 1 - Extracted Data":
 
                 all_entries_df.loc[mask, "category"] = new_category
                 all_entries_df.loc[mask, "folder"] = new_category
+                all_entries_df.loc[mask, "total"] = float(new_amount)
 
                 update_vendor_memory(
                     user_phone=phone,
