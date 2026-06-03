@@ -1003,23 +1003,83 @@ if screen == "Screen 1 - Extracted Data":
         is_mobile = st.toggle("📱 Mobile view", value=False)
 
         if is_mobile:
-            mobile_display_df = display_df.copy()
+            edited_rows = []
 
-            mobile_display_df = mobile_display_df[
-                ["Expense Number", "Date", "Vendor", "Category", "Amount"]
+            category_options = [
+                "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
+                "Software", "Office Supplies", "Vehicle", "Professional Fees",
+                "Insurance", "Travel", "Income", "Uncategorized",
             ]
 
-            st.markdown(
-                f"""
-                <div class="mobile-table">
-                    {mobile_display_df.to_html(index=False, escape=False)}
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+            for i, row in display_df.iterrows():
+                st.markdown(
+                    f"""
+                    <div style="
+                        background:white;
+                        border:1px solid #BFDBFE;
+                        border-radius:14px;
+                        padding:12px;
+                        margin-bottom:8px;
+                    ">
+                        <div style="display:flex; justify-content:space-between; gap:10px;">
+                            <div style="font-weight:900;">{row["Expense Number"]}</div>
+                            <div style="font-weight:800;">₹{float(row["Amount"]):,.2f}</div>
+                        </div>
+                        <div style="font-size:14px; margin-top:6px;">
+                            <strong>{row["Vendor"]}</strong>
+                        </div>
+                        <div style="font-size:13px; color:#475569; margin-top:4px;">
+                            {row["Date"]} • {row["Description"]}
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-            st.info("To edit category, amount, or delete expenses, turn off Mobile view.")
-            edited_df = display_df
+                current_category = str(row.get("Category", "Uncategorized"))
+                category_index = (
+                    category_options.index(current_category)
+                    if current_category in category_options
+                    else category_options.index("Uncategorized")
+                )
+
+                c1, c2 = st.columns([1.2, 1])
+
+                with c1:
+                    new_category = st.selectbox(
+                        "Category",
+                        category_options,
+                        index=category_index,
+                        key=f"mobile_cat_{i}",
+                        label_visibility="collapsed",
+                    )
+
+                with c2:
+                    new_amount = st.number_input(
+                        "Amount",
+                        min_value=0.0,
+                        value=float(row["Amount"]),
+                        step=1.0,
+                        key=f"mobile_amt_{i}",
+                        label_visibility="collapsed",
+                    )
+
+                delete_row = st.checkbox(
+                    "Delete this expense",
+                    value=False,
+                    key=f"mobile_delete_{i}",
+                )
+
+                edited_rows.append({
+                    **row.to_dict(),
+                    "Category": new_category,
+                    "Amount": new_amount,
+                    "Delete?": delete_row,
+                })
+
+                st.divider()
+
+            edited_df = pd.DataFrame(edited_rows)
 
         else:
             edited_df = st.data_editor(
