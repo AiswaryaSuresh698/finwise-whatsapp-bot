@@ -210,6 +210,9 @@ TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 
+def mobile_table_html(df):
+    return df.to_html(index=False, escape=False)
+
 
 def send_password_reset_code(phone):
     code = str(random.randint(100000, 999999))
@@ -568,6 +571,39 @@ st.markdown("""
     }
 }
 
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+.mobile-table {
+    background: white;
+    border: 1px solid #BFDBFE;
+    border-radius: 18px;
+    overflow-x: auto;
+    padding: 8px;
+}
+
+.mobile-table table {
+    width: 100%;
+    border-collapse: collapse;
+    color: #0F172A !important;
+    background: white !important;
+}
+
+.mobile-table th,
+.mobile-table td {
+    color: #0F172A !important;
+    background: white !important;
+    border-bottom: 1px solid #E5E7EB;
+    padding: 10px;
+    font-size: 14px;
+    white-space: nowrap;
+}
+
+.mobile-table th {
+    font-weight: 800;
+}
 </style>
 """, unsafe_allow_html=True)
 # -----------------------------
@@ -961,36 +997,34 @@ if screen == "Screen 1 - Extracted Data":
             errors="coerce"
         ).fillna(0)
 
-        edited_df = st.data_editor(
-            display_df,
-            use_container_width=True,
-            num_rows="fixed",
-            hide_index=False,
-            height=360,
-            key="screen1_expense_editor",
-            column_config={
-                "Category": st.column_config.SelectboxColumn(
-                    "Category",
-                    options=[
-                        "Grocery",
-                        "Gas",
-                        "Internet",
-                        "Utilities",
-                        "Meals",
-                        "Rent",
-                        "Software",
-                        "Office Supplies",
-                        "Vehicle",
-                        "Professional Fees",
-                        "Insurance",
-                        "Travel",
-                        "Income",
-                        "Uncategorized",
-                    ],
-                    required=True,
-                )
-            }
-        )
+        is_mobile = st.checkbox("Mobile view", value=True, label_visibility="collapsed")
+
+        if is_mobile:
+            st.markdown(
+                f'<div class="mobile-table">{mobile_table_html(display_df)}</div>',
+                unsafe_allow_html=True
+            )
+            edited_df = display_df
+        else:
+            edited_df = st.data_editor(
+                display_df,
+                use_container_width=True,
+                num_rows="fixed",
+                hide_index=False,
+                height=360,
+                key="screen1_expense_editor",
+                column_config={
+                    "Category": st.column_config.SelectboxColumn(
+                        "Category",
+                        options=[
+                            "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
+                            "Software", "Office Supplies", "Vehicle", "Professional Fees",
+                            "Insurance", "Travel", "Income", "Uncategorized",
+                        ],
+                        required=True,
+                    )
+                }
+            )
 
         if st.button("💾 Save Category Changes", type="primary", use_container_width=True):
             all_entries_df = load_entries()
@@ -1076,10 +1110,10 @@ if screen == "Screen 1 - Extracted Data":
         st.write("### Petpooja Payment Summary")
         payment_summary = payment_summary.reset_index(drop=True)
 
-        st.dataframe(
-            payment_summary,
-            use_container_width=True
-        )
+        st.markdown(
+    f'<div class="mobile-table">{mobile_table_html(payment_summary)}</div>',
+    unsafe_allow_html=True
+)
 
         with st.expander("Preview Petpooja Report"):
             petpooja_preview_df = petpooja_saved_df.reset_index(drop=True).copy()
@@ -1096,10 +1130,9 @@ if screen == "Screen 1 - Extracted Data":
                 if col in petpooja_preview_df.columns
             ]
 
-            st.dataframe(
-                petpooja_preview_df[available_petpooja_columns],
-                use_container_width=True,
-                hide_index=True
+            st.markdown(
+                f'<div class="mobile-table">{mobile_table_html(petpooja_preview_df[available_petpooja_columns])}</div>',
+                unsafe_allow_html=True
             )
 
     output = BytesIO()
