@@ -1003,71 +1003,23 @@ if screen == "Screen 1 - Extracted Data":
         is_mobile = st.toggle("📱 Mobile view", value=False)
 
         if is_mobile:
-            edited_rows = []
+            mobile_display_df = display_df.copy()
 
-            for i, row in display_df.iterrows():
-                with st.container():
-                    st.markdown(
-                        f"""
-                        <div style="
-                            background:white;
-                            border:1px solid #BFDBFE;
-                            border-radius:16px;
-                            padding:14px;
-                            margin-bottom:14px;
-                        ">
-                            <div style="font-weight:900;">{row["Expense Number"]}</div>
-                            <div><strong>Date:</strong> {row["Date"]}</div>
-                            <div><strong>Vendor:</strong> {row["Vendor"]}</div>
-                            <div><strong>Description:</strong> {row["Description"]}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+            mobile_display_df = mobile_display_df[
+                ["Expense Number", "Date", "Vendor", "Category", "Amount"]
+            ]
 
-                    new_category = st.selectbox(
-                        "Category",
-                        [
-                            "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
-                            "Software", "Office Supplies", "Vehicle", "Professional Fees",
-                            "Insurance", "Travel", "Income", "Uncategorized",
-                        ],
-                        index=[
-                            "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
-                            "Software", "Office Supplies", "Vehicle", "Professional Fees",
-                            "Insurance", "Travel", "Income", "Uncategorized",
-                        ].index(row["Category"]) if row["Category"] in [
-                            "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
-                            "Software", "Office Supplies", "Vehicle", "Professional Fees",
-                            "Insurance", "Travel", "Income", "Uncategorized",
-                        ] else 13,
-                        key=f"mobile_cat_{i}",
-                    )
+            st.markdown(
+                f"""
+                <div class="mobile-table">
+                    {mobile_display_df.to_html(index=False, escape=False)}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
-                    new_amount = st.number_input(
-                        "Amount",
-                        min_value=0.0,
-                        value=float(row["Amount"]),
-                        step=1.0,
-                        key=f"mobile_amt_{i}",
-                    )
-
-                    delete_row = st.checkbox(
-                        "Delete this expense",
-                        value=False,
-                        key=f"mobile_delete_{i}",
-                    )
-
-                    edited_rows.append({
-                        **row.to_dict(),
-                        "Category": new_category,
-                        "Amount": new_amount,
-                        "Delete?": delete_row,
-                    })
-
-                    st.divider()
-
-            edited_df = pd.DataFrame(edited_rows)
+            st.info("To edit category, amount, or delete expenses, turn off Mobile view.")
+            edited_df = display_df
 
         else:
             edited_df = st.data_editor(
