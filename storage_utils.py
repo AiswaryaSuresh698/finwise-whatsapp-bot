@@ -123,8 +123,14 @@ def clean_phone(phone: str) -> str:
     phone = phone.replace("-", "")
     phone = phone.replace("(", "")
     phone = phone.replace(")", "")
-    return phone.strip()
+    phone = phone.strip()
 
+    # India number normalization
+    # If user enters 10-digit Indian number, store with 91 prefix
+    if len(phone) == 10 and phone.startswith(("6", "7", "8", "9")):
+        phone = "91" + phone
+
+    return phone
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(str(password).encode("utf-8")).hexdigest()
