@@ -457,10 +457,6 @@ def load_restaurant_uploaders():
         if col not in df.columns:
             df[col] = ""
 
-    df["owner_phone"] = df["owner_phone"].astype(str).apply(clean_phone)
-    df["uploader_phone"] = df["uploader_phone"].astype(str).apply(clean_phone)
-    df["active"] = df["active"].astype(str).str.lower().str.strip()
-
     return df
 
 
@@ -476,12 +472,32 @@ def get_owner_phone_for_uploader(uploader_phone):
     if df.empty:
         return uploader_clean
 
+    def normalize_phone_for_match(value):
+        value = str(value or "")
+        value = value.replace(".0", "")
+        value = value.replace("whatsapp:", "")
+        value = value.replace("+", "")
+        value = value.replace(" ", "")
+        value = value.replace("-", "")
+        value = value.replace("(", "")
+        value = value.replace(")", "")
+        return value.strip()
+
+    df["owner_phone_match"] = df["owner_phone"].apply(normalize_phone_for_match)
+    df["uploader_phone_match"] = df["uploader_phone"].apply(normalize_phone_for_match)
+
+    uploader_match = normalize_phone_for_match(uploader_clean)
+
+    df["active_match"] = df["active"].astype(str).str.lower().str.strip()
+
     matched = df[
-        (df["uploader_phone"].astype(str) == uploader_clean) &
-        (df["active"].astype(str).str.lower().isin(["yes", "true", "1", "active"]))
+        (df["uploader_phone_match"] == uploader_match) &
+        (df["active_match"].isin(["yes", "true", "1", "active"]))
     ]
 
     if matched.empty:
+        print("No restaurant uploader match found for:", uploader_match)
+        print("Available uploaders:", df["uploader_phone_match"].tolist())
         return None
 
-    return clean_phone(matched.iloc[-1]["owner_phone"])
+    return clean_phone(matched.iloc[-1]["owner_phone_match"])
