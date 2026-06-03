@@ -11,7 +11,7 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from dotenv import load_dotenv
 from PIL import Image
-from storage_utils import load_entries, save_entries, update_vendor_memory
+from storage_utils import load_entries, save_entries, update_vendor_memory, get_owner_phone_for_uploader
 import pandas as pd
 import hashlib
 from storage_utils import load_entries
@@ -23,6 +23,7 @@ from storage_utils import (
     ensure_storage,
     apply_vendor_memory,
     clean_phone,
+    get_owner_phone_for_uploader,
 )
 
 
@@ -133,6 +134,15 @@ def whatsapp():
     raw_from = request.form.get("From", "")
     from_number = raw_from.replace("whatsapp:", "")
     phone_key = clean_phone(from_number)
+    uploader_phone = phone_key
+    owner_phone = get_owner_phone_for_uploader(uploader_phone)
+
+    if owner_phone is None:
+        response.message(
+            "This WhatsApp number is not linked to any FinWise restaurant account. "
+            "Please ask the restaurant owner to add this number."
+        )
+        return str(response)
     incoming_msg = request.form.get("Body", "").strip()
     num_media = int(request.form.get("NumMedia", "0") or 0)
 
@@ -149,12 +159,10 @@ def whatsapp():
 
     if num_media == 0:
         pending = load_pending_category()
-        phone_key = clean_phone(from_number)
-
-        print("Checking pending for:", phone_key, flush=True)
+        print("Checking pending for:", uploader_phone, flush=True)
         print("Pending keys:", list(pending.keys()), flush=True)
 
-        if phone_key in pending:
+        if uploader_phone in pending:
             category = incoming_msg.title()
 
             if not category:
@@ -170,7 +178,7 @@ def whatsapp():
                 )
                 return str(response)
 
-            pending_entry = pending[phone_key]
+            pending_entry = pending[uploader_phone]
             pending_entry["category"] = category
             pending_entry["folder"] = category
 
@@ -179,13 +187,13 @@ def whatsapp():
             append_entry(pending_entry)
 
             update_vendor_memory(
-                user_phone=from_number,
+                user_phone=owner_phone,
                 vendor=pending_entry.get("vendor", ""),
                 category=category,
                 folder=category,
             )
 
-            clear_pending_category(phone_key)
+            clear_pending_category(uploader_phone)
 
             response.message(
                 f"Saved bill ✅\n"
@@ -234,7 +242,7 @@ def whatsapp():
             )
             return str(response)
 
-        duplicate_key = make_expense_duplicate_key(from_number, extracted)
+        duplicate_key = make_expense_duplicate_key(owner_phone, extracted)
 
         if is_duplicate_expense(duplicate_key):
             response.message("This bill was already uploaded earlier.")
@@ -244,7 +252,7 @@ def whatsapp():
         category = extracted.get("category", "Uncategorized")
         folder = extracted.get("folder", "Uncategorized")
 
-        memory_category, memory_folder = apply_vendor_memory(from_number, vendor)
+        memory_category, memory_folder = apply_vendor_memory(owner_phone, vendor)
         has_vendor_memory = bool(memory_category or memory_folder)
 
         if memory_category:
@@ -266,7 +274,8 @@ def whatsapp():
             "date": extracted.get("date", ""),
             "transaction_type": extracted.get("transaction_type", "expense"),
             "vendor": vendor,
-            "user_phone": from_number,
+            "user_phone": owner_phone,
+            "uploaded_by": uploader_phone,
             "description": extracted.get("description", ""),
             "category": category,
             "folder": folder,
@@ -282,10 +291,10 @@ def whatsapp():
 
         if not has_vendor_memory:
             pending = load_pending_category()
-            pending[phone_key] = entry
+            pending[uploader_phone] = entry
             save_pending_category(pending)
 
-            print("Saved to pending category:", phone_key, flush=True)
+            print("Saved to pending category:", uploader_phone, flush=True)
 
             send_whatsapp_message(
                 raw_from,
