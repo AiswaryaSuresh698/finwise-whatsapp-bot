@@ -436,3 +436,52 @@ def load_petpooja_entries():
 
 def save_petpooja_entries(df):
     write_sheet("petpooja_entries", df)
+
+# -----------------------------
+# Restaurant uploaders
+# -----------------------------
+def load_restaurant_uploaders():
+    df = read_sheet("restaurant_uploaders")
+
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "owner_phone",
+                "uploader_phone",
+                "uploader_name",
+                "active",
+            ]
+        )
+
+    for col in ["owner_phone", "uploader_phone", "uploader_name", "active"]:
+        if col not in df.columns:
+            df[col] = ""
+
+    df["owner_phone"] = df["owner_phone"].astype(str).apply(clean_phone)
+    df["uploader_phone"] = df["uploader_phone"].astype(str).apply(clean_phone)
+    df["active"] = df["active"].astype(str).str.lower().str.strip()
+
+    return df
+
+
+def save_restaurant_uploaders(df):
+    write_sheet("restaurant_uploaders", df)
+
+
+def get_owner_phone_for_uploader(uploader_phone):
+    uploader_clean = clean_phone(uploader_phone)
+
+    df = load_restaurant_uploaders()
+
+    if df.empty:
+        return uploader_clean
+
+    matched = df[
+        (df["uploader_phone"].astype(str) == uploader_clean) &
+        (df["active"].astype(str).str.lower().isin(["yes", "true", "1", "active"]))
+    ]
+
+    if matched.empty:
+        return None
+
+    return clean_phone(matched.iloc[-1]["owner_phone"])
