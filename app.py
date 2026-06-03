@@ -994,11 +994,11 @@ if screen == "Screen 1 - Extracted Data":
         display_df["Vendor"] = original_df.get("vendor", "")
         display_df["Description"] = original_df.get("description", "")
         display_df["Category"] = original_df.get("category", "")
-        display_df["Delete?"] = False
         display_df["Amount"] = pd.to_numeric(
             original_df.get("total", 0),
             errors="coerce"
         ).fillna(0)
+        display_df["Delete?"] = False
 
         is_mobile = st.checkbox("Mobile view", value=True, label_visibility="collapsed")
 
