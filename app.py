@@ -243,7 +243,93 @@ header { background:white !important; }
 section[data-testid="stSidebar"] { background:#FFFFFF !important; border-right:1px solid #E5E7EB; }
 h1,h2,h3,h4,p,label,span { color:#0F172A !important; }
 .stButton button { border-radius:12px !important; background:#2563EB !important; color:white !important; font-weight:700 !important; border:none !important; }
-div[data-testid="stFileUploader"] { background:#FFFFFF; border:1px dashed #CBD5E1; border-radius:16px; padding:12px; }
+div[data-testid="stFileUploader"] { background:#FFFFFF; border:1px dashed #CBD5E1; border-radius:16px; padding:12px; }         
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+@media (max-width: 768px) {
+
+    .stApp {
+        color: #0F172A !important;
+    }
+
+    /* Select box */
+    div[data-baseweb="select"] > div,
+    div[data-baseweb="select"] span {
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+    }
+
+    /* File uploader */
+    section[data-testid="stFileUploader"],
+    section[data-testid="stFileUploader"] div,
+    section[data-testid="stFileUploader"] label {
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+    }
+
+    section[data-testid="stFileUploader"] {
+        border-radius: 18px !important;
+        border: 1px dashed #BFDBFE !important;
+    }
+
+    /* Dataframes and tables */
+    div[data-testid="stDataFrame"],
+    div[data-testid="stDataFrame"] div,
+    div[data-testid="stDataFrame"] span,
+    div[data-testid="stDataFrame"] p {
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+    }
+
+    div[data-testid="stDataFrame"] {
+        border-radius: 18px !important;
+        border: 1px solid #BFDBFE !important;
+        overflow: hidden !important;
+    }
+
+    /* Expander */
+    details,
+    details summary,
+    details div {
+        background-color: rgba(255,255,255,0.85) !important;
+        color: #0F172A !important;
+    }
+
+    details {
+        border-radius: 16px !important;
+        border: 1px solid #BFDBFE !important;
+    }
+
+    /* Buttons */
+    .stButton > button,
+    div[data-testid="stButton"] > button,
+    button[kind="primary"],
+    button[kind="secondary"] {
+        background: linear-gradient(90deg, #2563EB, #22C55E) !important;
+        color: #0F172A !important;
+        border: none !important;
+        border-radius: 14px !important;
+        font-weight: 700 !important;
+    }
+
+    .stButton > button p,
+    div[data-testid="stButton"] > button p {
+        color: #0F172A !important;
+        font-weight: 700 !important;
+    }
+
+    /* Download button */
+    div[data-testid="stDownloadButton"] button,
+    div[data-testid="stDownloadButton"] button p {
+        background: linear-gradient(90deg, #2563EB, #22C55E) !important;
+        color: #0F172A !important;
+        border-radius: 14px !important;
+        font-weight: 700 !important;
+    }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -297,15 +383,15 @@ h1, h2, h3 {
 
 /* Tables */
 .stDataFrame {
-    background: rgba(255,255,255,0.82);
+    background: #FFFFFF !important;
     border-radius: 18px;
     border: 1px solid #BFDBFE;
     overflow: hidden;
 }
-
+            
 /* Upload section */
 [data-testid="stFileUploader"] {
-    background: rgba(255,255,255,0.82);
+    background: #FFFFFF !important;
     border: 1px solid #BFDBFE;
     border-radius: 18px;
     padding: 16px;
@@ -313,7 +399,8 @@ h1, h2, h3 {
 
 /* Selectbox */
 .stSelectbox > div > div {
-    background: rgba(255,255,255,0.88);
+    background: #FFFFFF !important;
+    color: #0F172A !important;
     border-radius: 14px;
     border: 1px solid #BFDBFE;
 }
@@ -332,9 +419,9 @@ h1, h2, h3 {
     box-shadow: 0 8px 24px rgba(37,99,235,0.18);
 }
 
-/* Expanders for screen 2 */
 .streamlit-expanderHeader {
-    background: rgba(255,255,255,0.75) !important;
+    background: #FFFFFF !important;
+    color: #0F172A !important;
     border-radius: 14px !important;
     border: 1px solid #BFDBFE !important;
     font-weight: 700 !important;
@@ -386,6 +473,21 @@ div[data-testid="stButton"] > button p {
     color: inherit !important;
     font-weight: 700 !important;
 }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+
+div[data-testid="stDataFrame"] *,
+[data-testid="stFileUploader"] *,
+.streamlit-expanderHeader,
+details,
+summary {
+    background: #FFFFFF !important;
+    color: #0F172A !important;
+}
+
 </style>
 """, unsafe_allow_html=True)
 # -----------------------------
