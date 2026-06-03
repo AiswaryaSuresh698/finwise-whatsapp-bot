@@ -479,13 +479,93 @@ div[data-testid="stButton"] > button p {
 st.markdown("""
 <style>
 
-div[data-testid="stDataFrame"] *,
-[data-testid="stFileUploader"] *,
-.streamlit-expanderHeader,
-details,
-summary {
-    background: #FFFFFF !important;
-    color: #0F172A !important;
+/* Force Streamlit mobile to light mode without hiding dataframe text */
+@media (max-width: 768px) {
+
+    .stApp {
+        background: linear-gradient(135deg, #F0F9FF 0%, #DBEAFE 45%, #DCFCE7 100%) !important;
+        color: #0F172A !important;
+    }
+
+    /* Open WhatsApp link button */
+    div[data-testid="stLinkButton"] a {
+        background: linear-gradient(90deg, #2563EB, #22C55E) !important;
+        color: #0F172A !important;
+        border: none !important;
+        border-radius: 14px !important;
+        font-weight: 800 !important;
+        text-decoration: none !important;
+    }
+
+    div[data-testid="stLinkButton"] a p {
+        color: #0F172A !important;
+        font-weight: 800 !important;
+    }
+
+    /* Normal buttons */
+    .stButton > button,
+    div[data-testid="stButton"] > button,
+    div[data-testid="stDownloadButton"] button {
+        background: linear-gradient(90deg, #2563EB, #22C55E) !important;
+        color: #0F172A !important;
+        border: none !important;
+        border-radius: 14px !important;
+        font-weight: 800 !important;
+    }
+
+    .stButton > button p,
+    div[data-testid="stButton"] > button p,
+    div[data-testid="stDownloadButton"] button p {
+        color: #0F172A !important;
+        font-weight: 800 !important;
+    }
+
+    /* File uploader */
+    section[data-testid="stFileUploader"] {
+        background: #FFFFFF !important;
+        border: 1px dashed #BFDBFE !important;
+        border-radius: 18px !important;
+        padding: 16px !important;
+    }
+
+    section[data-testid="stFileUploader"] label,
+    section[data-testid="stFileUploader"] p,
+    section[data-testid="stFileUploader"] span {
+        color: #0F172A !important;
+    }
+
+    /* Selectbox */
+    div[data-baseweb="select"] > div {
+        background: #FFFFFF !important;
+        color: #0F172A !important;
+        border-radius: 14px !important;
+    }
+
+    div[data-baseweb="select"] span {
+        color: #0F172A !important;
+    }
+
+    /* Dataframe container only - do not style inner canvas */
+    div[data-testid="stDataFrame"] {
+        background: #FFFFFF !important;
+        border: 1px solid #BFDBFE !important;
+        border-radius: 18px !important;
+        overflow: hidden !important;
+    }
+
+    /* Expander */
+    details {
+        background: #FFFFFF !important;
+        border: 1px solid #BFDBFE !important;
+        border-radius: 16px !important;
+    }
+
+    details summary,
+    details summary p,
+    details p,
+    details span {
+        color: #0F172A !important;
+    }
 }
 
 </style>
