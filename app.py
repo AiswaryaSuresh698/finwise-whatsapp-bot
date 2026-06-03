@@ -360,7 +360,34 @@ footer {
 </style>
 """, unsafe_allow_html=True)
 
+st.markdown("""
+<style>
+.stButton > button,
+div[data-testid="stButton"] > button,
+button[kind="primary"],
+button[kind="secondary"] {
+    background: linear-gradient(90deg, #2563EB, #22C55E) !important;
+    color: #0F172A !important;
+    border: none !important;
+    border-radius: 14px !important;
+    font-weight: 700 !important;
+    box-shadow: 0 10px 24px rgba(37, 99, 235, 0.18) !important;
+}
 
+.stButton > button:hover,
+div[data-testid="stButton"] > button:hover {
+    background: linear-gradient(90deg, #1D4ED8, #16A34A) !important;
+    color: white !important;
+    border: none !important;
+}
+
+.stButton > button p,
+div[data-testid="stButton"] > button p {
+    color: inherit !important;
+    font-weight: 700 !important;
+}
+</style>
+""", unsafe_allow_html=True)
 # -----------------------------
 # Login state
 # -----------------------------
