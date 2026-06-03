@@ -927,6 +927,8 @@ if screen == "Screen 1 - Extracted Data":
     # WhatsApp entries
     df = load_entries()
     df = filter_by_phone(df, phone)
+    if not df.empty and "is_deleted" in df.columns:
+        df = df[df["is_deleted"].astype(str).str.lower() != "yes"].copy()
 
     if not df.empty:
         if "vendor" in df.columns:
@@ -992,6 +994,7 @@ if screen == "Screen 1 - Extracted Data":
         display_df["Vendor"] = original_df.get("vendor", "")
         display_df["Description"] = original_df.get("description", "")
         display_df["Category"] = original_df.get("category", "")
+        display_df["Delete?"] = False
         display_df["Amount"] = pd.to_numeric(
             original_df.get("total", 0),
             errors="coerce"
@@ -1022,8 +1025,14 @@ if screen == "Screen 1 - Extracted Data":
                             "Insurance", "Travel", "Income", "Uncategorized",
                         ],
                         required=True,
-                    )
+                    ),
+                    "Delete?": st.column_config.CheckboxColumn(
+                        "Delete?",
+                        help="Select this to delete the expense",
+                        default=False,
+                    ),
                 }
+                
             )
 
         if st.button("💾 Save Category Changes", type="primary", use_container_width=True):
@@ -1063,6 +1072,41 @@ if screen == "Screen 1 - Extracted Data":
 
             st.success("Category changes saved. Screen 2 folder view updated.")
             st.rerun()
+
+        if st.button("🗑️ Delete Selected Expenses", use_container_width=True):
+            all_entries_df = load_entries()
+
+            selected_rows = edited_df[edited_df["Delete?"] == True]
+
+            if selected_rows.empty:
+                st.warning("Please select at least one expense to delete.")
+            else:
+                deleted_count = 0
+
+                for i, row in selected_rows.iterrows():
+                    original_row = original_df.iloc[i]
+                    original_id = original_row.get("id", None)
+                    vendor = original_row.get("vendor", "")
+                    date_value = original_row.get("date", "")
+                    total_value = original_row.get("total", "")
+
+                    if original_id is not None and "id" in all_entries_df.columns:
+                        mask = all_entries_df["id"].astype(str) == str(original_id)
+                    else:
+                        mask = (
+                            (all_entries_df["user_phone"].astype(str).apply(clean_phone) == clean_phone(phone)) &
+                            (all_entries_df["vendor"].astype(str) == str(vendor)) &
+                            (all_entries_df["date"].astype(str) == str(date_value)) &
+                            (all_entries_df["total"].astype(str) == str(total_value))
+                        )
+
+                    all_entries_df.loc[mask, "is_deleted"] = "yes"
+                    deleted_count += int(mask.sum())
+
+                save_entries(all_entries_df)
+
+                st.success(f"Deleted {deleted_count} expense(s).")
+                st.rerun()
 
     st.write("### Petpooja Sales Summary")
     st.metric("Petpooja Total Sales", f"₹{petpooja_filtered_income:,.2f}")
@@ -1165,6 +1209,9 @@ elif screen == "Screen 2 - Folder View":
 
     df = load_entries()
     df = filter_by_phone(df, phone)
+
+    if not df.empty and "is_deleted" in df.columns:
+        df = df[df["is_deleted"].astype(str).str.lower() != "yes"].copy()
 
     if df.empty:
         st.info("No bills found for this phone number.")
