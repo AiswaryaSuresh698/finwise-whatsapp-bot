@@ -444,18 +444,29 @@ def load_restaurant_uploaders():
     df = read_sheet("restaurant_uploaders")
 
     if df.empty:
-        return pd.DataFrame(
-            columns=[
-                "owner_phone",
-                "uploader_phone",
-                "uploader_name",
-                "active",
-            ]
-        )
+        return pd.DataFrame(columns=[
+            "owner_phone",
+            "uploader_phone",
+            "uploader_name",
+            "active",
+        ])
 
+    # Clean column names
+    df.columns = [
+        str(col).strip().lower().replace(" ", "_")
+        for col in df.columns
+    ]
+
+    # Guarantee required columns
     for col in ["owner_phone", "uploader_phone", "uploader_name", "active"]:
         if col not in df.columns:
             df[col] = ""
+
+    # Clean values
+    df["owner_phone"] = df["owner_phone"].astype(str).str.strip()
+    df["uploader_phone"] = df["uploader_phone"].astype(str).str.strip()
+    df["uploader_name"] = df["uploader_name"].astype(str).str.strip()
+    df["active"] = df["active"].astype(str).str.lower().str.strip()
 
     return df
 
@@ -471,6 +482,35 @@ def get_owner_phone_for_uploader(uploader_phone):
 
     if df.empty:
         return uploader_clean
+
+    def normalize_phone_for_match(value):
+        value = str(value or "")
+        value = value.replace(".0", "")
+        value = value.replace("whatsapp:", "")
+        value = value.replace("+", "")
+        value = value.replace(" ", "")
+        value = value.replace("-", "")
+        value = value.replace("(", "")
+        value = value.replace(")", "")
+        return value.strip()
+
+    df["owner_phone_match"] = df["owner_phone"].apply(normalize_phone_for_match)
+    df["uploader_phone_match"] = df["uploader_phone"].apply(normalize_phone_for_match)
+
+    uploader_match = normalize_phone_for_match(uploader_clean)
+
+    matched = df[
+        (df["uploader_phone_match"] == uploader_match) &
+        (df["active"].isin(["yes", "true", "1", "active"]))
+    ]
+
+    if matched.empty:
+        print("No restaurant uploader match found for:", uploader_match)
+        print("Available uploaders:", df["uploader_phone_match"].tolist())
+        print("Restaurant uploader dataframe:", df.to_dict("records"))
+        return None
+
+    return clean_phone(matched.iloc[-1]["owner_phone_match"])
 
     def normalize_phone_for_match(value):
         value = str(value or "")
