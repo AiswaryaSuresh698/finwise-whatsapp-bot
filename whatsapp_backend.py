@@ -167,6 +167,28 @@ def extract_purchase_date(text):
 
     return datetime.now().strftime("%Y-%m-%d")
 
+def parse_comma_text_expense(text):
+    parts = [p.strip() for p in str(text or "").split(",")]
+
+    if len(parts) < 3:
+        return None
+
+    item = parts[0]
+    vendor = parts[1]
+    amount = extract_amount(parts[2])
+    date_text = parts[3] if len(parts) >= 4 else "today"
+
+    if not item or not vendor or amount is None:
+        return None
+
+    return {
+        "item": item.title(),
+        "vendor": vendor.title(),
+        "amount": amount,
+        "date": extract_purchase_date(date_text),
+        "category": match_category(item) or "Uncategorized"
+    }
+
 
 def extract_vendor(text, amount, category):
     vendor = str(text or "")
@@ -290,20 +312,25 @@ def whatsapp():
 
             return str(response)
 
-        amount = extract_amount(incoming_msg)
+        
 
-        if amount is None:
+        parsed_text = parse_comma_text_expense(incoming_msg)
+
+        if parsed_text is None:
             response.message(
-                "Please include amount.\n"
-                "Example: Milk 1500\n"
-                "Example: Chicken 3200 today\n"
-                "Example: Soup oil 500"
+                "Please enter your expense:\n\n"
+                "Item, vendor, amount, date of purchase\n\n"
+                "Example:\n"
+                "chicken, walmart, 1500, on June 2\n\n"
+                "Or upload a bill image."
             )
             return str(response)
 
-        category = match_category(incoming_msg)
-        date_value = extract_purchase_date(incoming_msg)
-        vendor = extract_vendor(incoming_msg, amount, category)
+        amount = parsed_text["amount"]
+        category = parsed_text["category"]
+        date_value = parsed_text["date"]
+        vendor = parsed_text["vendor"]
+        item = parsed_text["item"]
 
         memory_category, memory_folder = apply_vendor_memory(owner_phone, vendor)
 
@@ -317,7 +344,7 @@ def whatsapp():
                 "vendor": vendor,
                 "user_phone": owner_phone,
                 "uploaded_by": uploader_phone,
-                "description": "",
+                "description": item,
                 "category": "Uncategorized",
                 "folder": "Uncategorized",
                 "subtotal": amount,
@@ -334,7 +361,7 @@ def whatsapp():
                         "vendor": vendor,
                         "date": date_value,
                         "total": amount,
-                        "description": "",
+                        "description": item,
                     }
                 ),
             }
@@ -360,7 +387,7 @@ def whatsapp():
             "vendor": vendor,
             "user_phone": owner_phone,
             "uploaded_by": uploader_phone,
-            "description": "",
+            "description": item,
             "category": category,
             "folder": folder,
             "subtotal": amount,
@@ -377,7 +404,7 @@ def whatsapp():
                     "vendor": vendor,
                     "date": date_value,
                     "total": amount,
-                    "description": "",
+                    "description": item,
                 }
             ),
         }
