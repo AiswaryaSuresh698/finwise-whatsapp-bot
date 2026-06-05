@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timedelta
 from difflib import get_close_matches
 import time
-
+import threading
 
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
@@ -233,6 +233,128 @@ def is_duplicate_expense(duplicate_key):
 
     return duplicate_key in entries_df["duplicate_key"].astype(str).values
 
+def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url, media_type):
+    request_start = time.time()
+
+    try:
+        print("Downloading image...", flush=True)
+
+        download_start = time.time()
+
+        media_response = requests.get(
+            media_url,
+            auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
+            timeout=30,
+        )
+
+        print(f"IMAGE DOWNLOAD: {round(time.time() - download_start, 2)} sec", flush=True)
+
+        media_response.raise_for_status()
+
+        image_load_start = time.time()
+
+        image_bytes = media_response.content
+        image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        image.thumbnail((1200, 1200))
+
+        print(f"IMAGE LOAD: {round(time.time() - image_load_start, 2)} sec", flush=True)
+
+        print("Calling OpenAI extraction...", flush=True)
+
+        ai_start = time.time()
+        extracted = extract_bill_details(client, image)
+
+        print(f"OPENAI EXTRACTION: {round(time.time() - ai_start, 2)} sec", flush=True)
+        print("Extracted:", extracted, flush=True)
+
+        if extracted.get("image_quality") in ["blurry", "unreadable"]:
+            send_whatsapp_message(
+                raw_from,
+                "This image is not clear enough to read. Please upload a clearer bill photo with good lighting."
+            )
+            return
+
+        duplicate_key = make_expense_duplicate_key(owner_phone, extracted)
+
+        if is_duplicate_expense(duplicate_key):
+            send_whatsapp_message(raw_from, "This bill was already uploaded earlier.")
+            return
+
+        vendor = extracted.get("vendor", "")
+        category = extracted.get("category", "Uncategorized")
+        folder = extracted.get("folder", "Uncategorized")
+
+        memory_category, memory_folder = apply_vendor_memory(owner_phone, vendor)
+        has_vendor_memory = bool(memory_category or memory_folder)
+
+        if memory_category:
+            category = memory_category
+
+        if memory_folder:
+            folder = memory_folder
+
+        ext = "png" if "png" in media_type else "jpg"
+
+        image_path = save_image_to_folder(
+            image_bytes=image_bytes,
+            folder=folder,
+            vendor=vendor or "unknown",
+            ext=ext,
+            bill_date=extracted.get("date", "")
+        )
+
+        entry = {
+            "date": extracted.get("date", ""),
+            "transaction_type": extracted.get("transaction_type", "expense"),
+            "vendor": vendor,
+            "user_phone": owner_phone,
+            "uploaded_by": uploader_phone,
+            "description": extracted.get("description", ""),
+            "category": category,
+            "folder": folder,
+            "subtotal": extracted.get("subtotal", 0),
+            "tax": extracted.get("tax", 0),
+            "total": extracted.get("total", 0),
+            "currency": extracted.get("currency", "INR"),
+            "confidence": extracted.get("confidence", "medium"),
+            "reason": extracted.get("reason", ""),
+            "image_path": image_path,
+            "duplicate_key": duplicate_key,
+        }
+
+        if not has_vendor_memory:
+            pending = load_pending_category()
+            pending[uploader_phone] = entry
+            save_pending_category(pending)
+
+            send_whatsapp_message(
+                raw_from,
+                f"I found a new vendor and need category confirmation.\n\n"
+                f"Vendor: {entry['vendor']}\n"
+                f"Total: ₹{entry['total']}\n\n"
+                f"Which category should I save this under?\n"
+                f"Example: Grocery, Gas, Meals, Salary, Utilities."
+            )
+            return
+
+        save_start = time.time()
+        append_entry(entry)
+
+        print(f"SAVE ENTRY: {round(time.time() - save_start, 2)} sec", flush=True)
+        print(f"FULL REQUEST TIME: {round(time.time() - request_start, 2)} sec", flush=True)
+
+        send_whatsapp_message(
+            raw_from,
+            f"Saved bill ✅\n"
+            f"Vendor: {entry['vendor']}\n"
+            f"Total: ₹{entry['total']}\n"
+            f"Category: {entry['category']}"
+        )
+
+    except Exception as e:
+        print("ERROR PROCESSING BILL:", str(e), flush=True)
+        send_whatsapp_message(raw_from, f"Could not process the bill. Error: {str(e)}")
+
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
     response = MessagingResponse()
@@ -442,156 +564,15 @@ def whatsapp():
     if not media_url:
         response.message("Please upload a bill image.")
         return str(response)
-    response.message("Bill received ✅\nProcessing now...") 
+    
+    threading.Thread(
+        target=process_bill_in_background,
+        args=(raw_from, owner_phone, uploader_phone, media_url, media_type),
+        daemon=True
+    ).start()
 
-    try:
-        request_start = time.time()
+    response.message("Bill received ✅\nProcessing now...")
 
-        print("Downloading image...", flush=True)
-
-        download_start = time.time()
-
-        media_response = requests.get(
-            media_url,
-            auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
-            timeout=30,
-        )
-
-        print(
-            f"IMAGE DOWNLOAD: {round(time.time() - download_start, 2)} sec",
-            flush=True
-        )
-
-        image_load_start = time.time()
-
-        image_bytes = media_response.content
-        image = Image.open(BytesIO(image_bytes)).convert("RGB")
-
-        print(
-            f"IMAGE LOAD: {round(time.time() - image_load_start, 2)} sec",
-            flush=True
-        )
-
-        print("Calling OpenAI extraction...", flush=True)
-
-        ai_start = time.time()
-
-        extracted = extract_bill_details(client, image)
-
-        print(
-            f"OPENAI EXTRACTION: {round(time.time() - ai_start, 2)} sec",
-            flush=True
-        )
-
-        print(
-            f"TOTAL REQUEST TIME SO FAR: {round(time.time() - request_start, 2)} sec",
-            flush=True
-        )
+    return str(response)
 
         
-
-        print("Extracted:", extracted, flush=True)
-
-        if extracted.get("image_quality") in ["blurry", "unreadable"]:
-            response.message(
-                "This image is not clear enough to read. Please upload a clearer bill photo with good lighting."
-            )
-            return str(response)
-
-        duplicate_key = make_expense_duplicate_key(owner_phone, extracted)
-
-        if is_duplicate_expense(duplicate_key):
-            response.message("This bill was already uploaded earlier.")
-            return str(response)
-
-        vendor = extracted.get("vendor", "")
-        category = extracted.get("category", "Uncategorized")
-        folder = extracted.get("folder", "Uncategorized")
-
-        memory_category, memory_folder = apply_vendor_memory(owner_phone, vendor)
-        has_vendor_memory = bool(memory_category or memory_folder)
-
-        if memory_category:
-            category = memory_category
-        if memory_folder:
-            folder = memory_folder
-
-        ext = "png" if "png" in media_type else "jpg"
-
-        image_path = save_image_to_folder(
-            image_bytes=image_bytes,
-            folder=folder,
-            vendor=vendor or "unknown",
-            ext=ext,
-            bill_date=extracted.get("date", "")
-        )
-
-        entry = {
-            "date": extracted.get("date", ""),
-            "transaction_type": extracted.get("transaction_type", "expense"),
-            "vendor": vendor,
-            "user_phone": owner_phone,
-            "uploaded_by": uploader_phone,
-            "description": extracted.get("description", ""),
-            "category": category,
-            "folder": folder,
-            "subtotal": extracted.get("subtotal", 0),
-            "tax": extracted.get("tax", 0),
-            "total": extracted.get("total", 0),
-            "currency": extracted.get("currency", "INR"),
-            "confidence": extracted.get("confidence", "medium"),
-            "reason": extracted.get("reason", ""),
-            "image_path": image_path,
-            "duplicate_key": duplicate_key,
-        }
-
-        if not has_vendor_memory:
-            pending = load_pending_category()
-            pending[uploader_phone] = entry
-            save_pending_category(pending)
-
-            print("Saved to pending category:", uploader_phone, flush=True)
-
-            send_whatsapp_message(
-                raw_from,
-                f"I found a new vendor and need category confirmation.\n\n"
-                f"Vendor: {entry['vendor']}\n"
-                f"Total: ₹{entry['total']}\n\n"
-                f"Which category should I save this under?\n"
-                f"Example: Grocery, Gas, Meals, Salary, Utilities."
-            )
-
-            return ""
-
-        print("Saving entry directly...", flush=True)
-
-        save_start = time.time()
-
-        append_entry(entry)
-
-        print(
-            f"SAVE ENTRY: {round(time.time() - save_start, 2)} sec",
-            flush=True
-        )
-
-        print("Entry saved successfully.", flush=True)
-
-        print(
-            f"FULL REQUEST TIME: {round(time.time() - request_start, 2)} sec",
-            flush=True
-        )
-
-        send_whatsapp_message(
-            raw_from,
-            f"Saved bill ✅\n"
-            f"Vendor: {entry['vendor']}\n"
-            f"Total: ₹{entry['total']}\n"
-            f"Category: {entry['category']}"
-        )
-
-        return str(response)
-
-    except Exception as e:
-        print("ERROR PROCESSING BILL:", str(e), flush=True)
-        response.message(f"Could not process the bill. Error: {str(e)}")
-        return str(response)
