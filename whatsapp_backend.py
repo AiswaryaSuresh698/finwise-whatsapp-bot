@@ -8,6 +8,7 @@ from twilio.rest import Client as TwilioClient
 import re
 from datetime import datetime, timedelta
 from difflib import get_close_matches
+import time
 
 
 from flask import Flask, request
@@ -444,7 +445,11 @@ def whatsapp():
     response.message("Bill received ✅\nProcessing now...") 
 
     try:
+        request_start = time.time()
+
         print("Downloading image...", flush=True)
+
+        download_start = time.time()
 
         media_response = requests.get(
             media_url,
@@ -452,15 +457,38 @@ def whatsapp():
             timeout=30,
         )
 
-        print("Image download status:", media_response.status_code, flush=True)
-        media_response.raise_for_status()
+        print(
+            f"IMAGE DOWNLOAD: {round(time.time() - download_start, 2)} sec",
+            flush=True
+        )
+
+        image_load_start = time.time()
 
         image_bytes = media_response.content
         image = Image.open(BytesIO(image_bytes)).convert("RGB")
-        image.thumbnail((1200, 1200))
+
+        print(
+            f"IMAGE LOAD: {round(time.time() - image_load_start, 2)} sec",
+            flush=True
+        )
 
         print("Calling OpenAI extraction...", flush=True)
+
+        ai_start = time.time()
+
         extracted = extract_bill_details(client, image)
+
+        print(
+            f"OPENAI EXTRACTION: {round(time.time() - ai_start, 2)} sec",
+            flush=True
+        )
+
+        print(
+            f"TOTAL REQUEST TIME SO FAR: {round(time.time() - request_start, 2)} sec",
+            flush=True
+        )
+
+        
 
         print("Extracted:", extracted, flush=True)
 
@@ -536,8 +564,22 @@ def whatsapp():
             return ""
 
         print("Saving entry directly...", flush=True)
+
+        save_start = time.time()
+
         append_entry(entry)
+
+        print(
+            f"SAVE ENTRY: {round(time.time() - save_start, 2)} sec",
+            flush=True
+        )
+
         print("Entry saved successfully.", flush=True)
+
+        print(
+            f"FULL REQUEST TIME: {round(time.time() - request_start, 2)} sec",
+            flush=True
+        )
 
         send_whatsapp_message(
             raw_from,
@@ -547,7 +589,7 @@ def whatsapp():
             f"Category: {entry['category']}"
         )
 
-        return ""
+        return str(response)
 
     except Exception as e:
         print("ERROR PROCESSING BILL:", str(e), flush=True)
