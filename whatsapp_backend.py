@@ -5,6 +5,9 @@ import json
 from storage_utils import read_sheet, write_sheet
 import pandas as pd
 from twilio.rest import Client as TwilioClient
+import re
+from datetime import datetime, timedelta
+from difflib import get_close_matches
 
 
 from flask import Flask, request
@@ -98,7 +101,89 @@ def clear_pending_category(phone):
         del pending[phone]
 
     save_pending_category(pending)
+CATEGORY_OPTIONS = [
+    "Milk", "Chicken", "Rice", "Frozen Foods", "Ice Cream", "Cylinder",
+    "Salary", "Marketing", "Utilities", "Rent", "Software", "Vehicle",
+    "Insurance", "Travel", "Professional Fees", "Office Supplies",
+    "Income", "Uncategorized"
+]
 
+CATEGORY_ALIASES = {
+    "groceries": "Uncategorized",
+    "grocery": "Uncategorized",
+    "frozen": "Frozen Foods",
+    "icecream": "Ice Cream",
+    "ice cream": "Ice Cream",
+    "ive cream": "Ice Cream",
+    "soap oil": "Utilities",
+    "soup oil": "Utilities",
+    "cylinder": "Cylinder",
+    "gas cylinder": "Cylinder",
+}
+
+
+def match_category(user_text):
+    text = str(user_text or "").lower().strip()
+
+    for alias, category in CATEGORY_ALIASES.items():
+        if alias in text:
+            return category
+
+    for category in CATEGORY_OPTIONS:
+        if category.lower() in text:
+            return category
+
+    category_names = [c.lower() for c in CATEGORY_OPTIONS]
+    words = re.findall(r"[a-zA-Z]+", text)
+
+    for word in words:
+        match = get_close_matches(word.lower(), category_names, n=1, cutoff=0.72)
+        if match:
+            matched_name = match[0]
+            return CATEGORY_OPTIONS[category_names.index(matched_name)]
+
+    return None
+
+
+def extract_amount(text):
+    amounts = re.findall(r"\d+(?:\.\d+)?", str(text or ""))
+    if not amounts:
+        return None
+    return float(amounts[0])
+
+
+def extract_purchase_date(text):
+    text = str(text or "").lower()
+
+    if "today" in text:
+        return datetime.now().strftime("%Y-%m-%d")
+
+    if "yesterday" in text:
+        return (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    date_match = re.search(r"\d{4}-\d{2}-\d{2}", text)
+    if date_match:
+        return date_match.group(0)
+
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def extract_vendor(text, amount, category):
+    vendor = str(text or "")
+
+    if amount is not None:
+        vendor = vendor.replace(str(int(amount)), "")
+        vendor = vendor.replace(str(amount), "")
+
+    if category:
+        vendor = re.sub(category, "", vendor, flags=re.IGNORECASE)
+
+    for word in ["today", "yesterday", "paid", "purchase", "bought", "for"]:
+        vendor = re.sub(rf"\b{word}\b", "", vendor, flags=re.IGNORECASE)
+
+    vendor = vendor.strip(" ,-")
+
+    return vendor if vendor else "Manual Entry"
 
 @app.route("/", methods=["GET"])
 def home():
@@ -205,7 +290,119 @@ def whatsapp():
 
             return str(response)
 
-        response.message("Send a bill/receipt image here.")
+        amount = extract_amount(incoming_msg)
+
+        if amount is None:
+            response.message(
+                "Please include amount.\n"
+                "Example: Milk 1500\n"
+                "Example: Chicken 3200 today\n"
+                "Example: Soup oil 500"
+            )
+            return str(response)
+
+        category = match_category(incoming_msg)
+        date_value = extract_purchase_date(incoming_msg)
+        vendor = extract_vendor(incoming_msg, amount, category)
+
+        memory_category, memory_folder = apply_vendor_memory(owner_phone, vendor)
+
+        if memory_category:
+            category = memory_category
+
+        if not category:
+            entry = {
+                "date": date_value,
+                "transaction_type": "expense",
+                "vendor": vendor,
+                "user_phone": owner_phone,
+                "uploaded_by": uploader_phone,
+                "description": "",
+                "category": "Uncategorized",
+                "folder": "Uncategorized",
+                "subtotal": amount,
+                "tax": 0,
+                "total": amount,
+                "currency": "INR",
+                "confidence": "manual",
+                "reason": "WhatsApp text entry",
+                "image_path": "",
+                "source": "WhatsApp Text",
+                "duplicate_key": make_expense_duplicate_key(
+                    owner_phone,
+                    {
+                        "vendor": vendor,
+                        "date": date_value,
+                        "total": amount,
+                        "description": "",
+                    }
+                ),
+            }
+
+            pending = load_pending_category()
+            pending[uploader_phone] = entry
+            save_pending_category(pending)
+
+            response.message(
+                f"I found a new vendor/text expense.\n\n"
+                f"Vendor: {vendor}\n"
+                f"Amount: ₹{amount}\n"
+                f"Date: {date_value}\n\n"
+                f"Which category should I save this under?"
+            )
+            return str(response)
+
+        folder = memory_folder if memory_folder else category
+
+        entry = {
+            "date": date_value,
+            "transaction_type": "expense",
+            "vendor": vendor,
+            "user_phone": owner_phone,
+            "uploaded_by": uploader_phone,
+            "description": "",
+            "category": category,
+            "folder": folder,
+            "subtotal": amount,
+            "tax": 0,
+            "total": amount,
+            "currency": "INR",
+            "confidence": "manual",
+            "reason": "WhatsApp text entry",
+            "image_path": "",
+            "source": "WhatsApp Text",
+            "duplicate_key": make_expense_duplicate_key(
+                owner_phone,
+                {
+                    "vendor": vendor,
+                    "date": date_value,
+                    "total": amount,
+                    "description": "",
+                }
+            ),
+        }
+
+        if is_duplicate_expense(entry["duplicate_key"]):
+            response.message("This text expense was already uploaded earlier.")
+            return str(response)
+
+        append_entry(entry)
+
+        update_vendor_memory(
+            user_phone=owner_phone,
+            vendor=vendor,
+            category=category,
+            folder=folder,
+        )
+
+        response.message(
+            f"Saved text expense ✅\n"
+            f"Vendor: {vendor}\n"
+            f"Amount: ₹{amount}\n"
+            f"Date: {date_value}\n"
+            f"Category: {category}"
+        )
+
         return str(response)
 
     media_url = request.form.get("MediaUrl0")
