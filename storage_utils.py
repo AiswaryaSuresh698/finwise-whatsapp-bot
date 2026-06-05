@@ -21,6 +21,7 @@ DEFAULT_FOLDERS = [
     "Meals",
     "Rent",
     "Software",
+    "Salary",
     "Office Supplies",
     "Vehicle",
     "Professional Fees",

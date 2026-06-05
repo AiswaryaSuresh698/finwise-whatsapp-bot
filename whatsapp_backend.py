@@ -152,7 +152,7 @@ def whatsapp():
     print("Media count:", num_media, flush=True)
 
     allowed_categories = [
-        "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
+        "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent","Salary",
         "Software", "Office Supplies", "Vehicle", "Professional Fees",
         "Insurance", "Travel", "Income", "Uncategorized"
     ]
@@ -304,7 +304,7 @@ def whatsapp():
                 f"Vendor: {entry['vendor']}\n"
                 f"Total: ₹{entry['total']}\n\n"
                 f"Which category should I save this under?\n"
-                f"Example: Grocery, Gas, Meals, Utilities."
+                f"Example: Grocery, Gas, Meals, Salary, Utilities."
             )
 
             return str(response)

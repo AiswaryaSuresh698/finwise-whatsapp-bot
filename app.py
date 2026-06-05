@@ -1008,7 +1008,7 @@ if screen == "Screen 1 - Extracted Data":
             category_options = [
                 "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
                 "Software", "Office Supplies", "Vehicle", "Professional Fees",
-                "Insurance", "Travel", "Income", "Uncategorized",
+                "Insurance", "Travel", "Income", "Uncategorized","Salary"
             ]
 
             for i, row in display_df.iterrows():
@@ -1093,7 +1093,7 @@ if screen == "Screen 1 - Extracted Data":
                     "Category": st.column_config.SelectboxColumn(
                         "Category",
                         options=[
-                            "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
+                            "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent", "Salary",
                             "Software", "Office Supplies", "Vehicle", "Professional Fees",
                             "Insurance", "Travel", "Income", "Uncategorized",
                         ],
