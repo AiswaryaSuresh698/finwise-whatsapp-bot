@@ -441,6 +441,7 @@ def whatsapp():
     if not media_url:
         response.message("Please upload a bill image.")
         return str(response)
+    response.message("Bill received ✅\nProcessing now...") 
 
     try:
         print("Downloading image...", flush=True)
@@ -456,6 +457,7 @@ def whatsapp():
 
         image_bytes = media_response.content
         image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        image.thumbnail((1200, 1200))
 
         print("Calling OpenAI extraction...", flush=True)
         extracted = extract_bill_details(client, image)
@@ -531,7 +533,7 @@ def whatsapp():
                 f"Example: Grocery, Gas, Meals, Salary, Utilities."
             )
 
-            return str(response)
+            return ""
 
         print("Saving entry directly...", flush=True)
         append_entry(entry)
@@ -545,7 +547,7 @@ def whatsapp():
             f"Category: {entry['category']}"
         )
 
-        return str(response)
+        return ""
 
     except Exception as e:
         print("ERROR PROCESSING BILL:", str(e), flush=True)
