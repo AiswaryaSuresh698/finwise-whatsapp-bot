@@ -29,6 +29,17 @@ DEFAULT_FOLDERS = [
     "Travel",
     "Income",
     "Uncategorized",
+    "Milk",
+    "Chicken",
+    "Rice",
+    "Brownie",
+    "Butter",
+    "Soap Oil",
+    "Cylinder",
+    "Frozen",
+    "Ice Cream",
+    "Parotta",
+    "Marketing"
 ]
 
 

@@ -1009,6 +1009,17 @@ if screen == "Screen 1 - Extracted Data":
                 "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
                 "Software", "Office Supplies", "Vehicle", "Professional Fees",
                 "Insurance", "Travel", "Income", "Uncategorized","Salary"
+                "Milk",
+                "Chicken",
+                "Rice",
+                "Brownie",
+                "Butter",
+                "Soap Oil",
+                "Cylinder",
+                "Frozen",
+                "Ice Cream",
+                "Parotta",
+                "Marketing"
             ]
 
             for i, row in display_df.iterrows():
@@ -1095,7 +1106,17 @@ if screen == "Screen 1 - Extracted Data":
                         options=[
                             "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent", "Salary",
                             "Software", "Office Supplies", "Vehicle", "Professional Fees",
-                            "Insurance", "Travel", "Income", "Uncategorized",
+                            "Insurance", "Travel", "Income", "Uncategorized", "Milk",
+                            "Chicken",
+                            "Rice",
+                            "Brownie",
+                            "Butter",
+                            "Soap Oil",
+                            "Cylinder",
+                            "Frozen",
+                            "Ice Cream",
+                            "Parotta",
+                            "Marketing"
                         ],
                         required=True,
                     ),
