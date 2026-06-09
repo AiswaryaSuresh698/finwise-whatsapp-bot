@@ -671,6 +671,24 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+@media (max-width: 768px) {
+    .st-key-desktop_expense_editor,
+    .st-key-desktop_expense_buttons {
+        display: none !important;
+    }
+}
+
+@media (min-width: 769px) {
+    .st-key-mobile_expense_editor,
+    .st-key-mobile_expense_buttons {
+        display: none !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
 # -----------------------------
 # Login state
 # -----------------------------
@@ -1156,12 +1174,13 @@ if screen == "Screen 1 - Extracted Data":
 
             edited_df_mobile = pd.DataFrame(mobile_rows)
 
-        if st.button("💾 Save Changes", type="primary", use_container_width=True):
+        def save_edited_expenses(edited_data, original_df, phone):
             all_entries_df = load_entries()
 
-            for i, row in edited_df.iterrows():
+            for i, row in edited_data.iterrows():
                 new_category = str(row.get("Category", "")).strip()
                 new_amount = pd.to_numeric(row.get("Amount", 0), errors="coerce")
+
                 if pd.isna(new_amount):
                     new_amount = 0
 
@@ -1195,43 +1214,69 @@ if screen == "Screen 1 - Extracted Data":
 
             save_entries(all_entries_df)
 
-            st.success("Category changes saved. Screen 2 folder view updated.")
-            st.rerun()
 
-        if st.button("🗑️ Delete Selected Expenses", use_container_width=True):
+        def delete_selected_expenses(edited_data, original_df, phone):
             all_entries_df = load_entries()
-
-            selected_rows = edited_df[edited_df["Delete?"] == True]
+            selected_rows = edited_data[edited_data["Delete?"] == True]
 
             if selected_rows.empty:
-                st.warning("Please select at least one expense to delete.")
-            else:
-                deleted_count = 0
+                return 0
 
-                for i, row in selected_rows.iterrows():
-                    original_row = original_df.iloc[i]
-                    original_id = original_row.get("id", None)
-                    vendor = original_row.get("vendor", "")
-                    date_value = original_row.get("date", "")
-                    total_value = original_row.get("total", "")
+            deleted_count = 0
 
-                    if original_id is not None and "id" in all_entries_df.columns:
-                        mask = all_entries_df["id"].astype(str) == str(original_id)
-                    else:
-                        mask = (
-                            (all_entries_df["user_phone"].astype(str).apply(clean_phone) == clean_phone(phone)) &
-                            (all_entries_df["vendor"].astype(str) == str(vendor)) &
-                            (all_entries_df["date"].astype(str) == str(date_value)) &
-                            (all_entries_df["total"].astype(str) == str(total_value))
-                        )
+            for i, row in selected_rows.iterrows():
+                original_row = original_df.iloc[i]
+                original_id = original_row.get("id", None)
+                vendor = original_row.get("vendor", "")
+                date_value = original_row.get("date", "")
+                total_value = original_row.get("total", "")
 
-                    all_entries_df.loc[mask, "is_deleted"] = "yes"
-                    deleted_count += int(mask.sum())
+                if original_id is not None and "id" in all_entries_df.columns:
+                    mask = all_entries_df["id"].astype(str) == str(original_id)
+                else:
+                    mask = (
+                        (all_entries_df["user_phone"].astype(str).apply(clean_phone) == clean_phone(phone)) &
+                        (all_entries_df["vendor"].astype(str) == str(vendor)) &
+                        (all_entries_df["date"].astype(str) == str(date_value)) &
+                        (all_entries_df["total"].astype(str) == str(total_value))
+                    )
 
-                save_entries(all_entries_df)
+                all_entries_df.loc[mask, "is_deleted"] = "yes"
+                deleted_count += int(mask.sum())
 
-                st.success(f"Deleted {deleted_count} expense(s).")
+            save_entries(all_entries_df)
+            return deleted_count
+        
+        with st.container(key="desktop_expense_buttons"):
+            if st.button("💾 Save Changes", type="primary", use_container_width=True, key="desktop_save_expenses"):
+                save_edited_expenses(edited_df, original_df, phone)
+                st.success("Desktop changes saved.")
                 st.rerun()
+
+            if st.button("🗑️ Delete Selected Expenses", use_container_width=True, key="desktop_delete_expenses"):
+                deleted_count = delete_selected_expenses(edited_df, original_df, phone)
+
+                if deleted_count == 0:
+                    st.warning("Please select at least one expense to delete.")
+                else:
+                    st.success(f"Deleted {deleted_count} expense(s).")
+                    st.rerun()
+
+
+        with st.container(key="mobile_expense_buttons"):
+            if st.button("💾 Save Mobile Changes", type="primary", use_container_width=True, key="mobile_save_expenses"):
+                save_edited_expenses(edited_df_mobile, original_df, phone)
+                st.success("Mobile changes saved.")
+                st.rerun()
+
+            if st.button("🗑️ Delete Selected Mobile Expenses", use_container_width=True, key="mobile_delete_expenses"):
+                deleted_count = delete_selected_expenses(edited_df_mobile, original_df, phone)
+
+                if deleted_count == 0:
+                    st.warning("Please select at least one expense to delete.")
+                else:
+                    st.success(f"Deleted {deleted_count} expense(s).")
+                    st.rerun()
 
     st.write("### Petpooja Sales Summary")
     st.metric("Petpooja Total Sales", f"₹{petpooja_filtered_income:,.2f}")
