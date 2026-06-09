@@ -1058,41 +1058,65 @@ if screen == "Screen 1 - Extracted Data":
             unsafe_allow_html=True
         )
 
-        # Desktop editable table
-        edited_df = st.data_editor(
-            display_df,
-            use_container_width=True,
-            num_rows="fixed",
-            hide_index=True,
-            height=360,
-            key="screen1_expense_editor",
-            column_config={
-                "Category": st.column_config.SelectboxColumn(
+        category_options = [
+            "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent", "Salary",
+            "Software", "Office Supplies", "Vehicle", "Professional Fees",
+            "Insurance", "Travel", "Income", "Uncategorized",
+            "Milk", "Chicken", "Rice", "Brownie", "Butter",
+            "Soap Oil", "Cylinder", "Frozen", "Ice Cream",
+            "Parotta", "Marketing"
+        ]
+
+        mobile_rows = []
+        st.info("For full table view, please log in from desktop.")
+
+        st.markdown("#### Mobile Edit View")
+
+        for i, row in display_df.iterrows():
+            with st.expander(
+                f'{row["Expense Number"]} • {row["Vendor"]} • ₹{float(row["Amount"]):,.2f}',
+                expanded=False
+            ):
+                st.write(f'**Date:** {row["Date"]}')
+                st.write(f'**Type:** {row["Type"]}')
+                st.write(f'**Description:** {row["Description"]}')
+
+                current_category = str(row.get("Category", "Uncategorized"))
+                category_index = (
+                    category_options.index(current_category)
+                    if current_category in category_options
+                    else category_options.index("Uncategorized")
+                )
+
+                new_category = st.selectbox(
                     "Category",
-                    options=[
-                        "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent", "Salary",
-                        "Software", "Office Supplies", "Vehicle", "Professional Fees",
-                        "Insurance", "Travel", "Income", "Uncategorized",
-                        "Milk", "Chicken", "Rice", "Brownie", "Butter",
-                        "Soap Oil", "Cylinder", "Frozen", "Ice Cream",
-                        "Parotta", "Marketing"
-                    ],
-                    required=True,
-                ),
-                "Amount": st.column_config.NumberColumn(
+                    category_options,
+                    index=category_index,
+                    key=f"mobile_category_{i}"
+                )
+
+                new_amount = st.number_input(
                     "Amount",
                     min_value=0.0,
+                    value=float(row["Amount"]),
                     step=1.0,
-                    format="₹%.2f",
-                ),
-                "Delete?": st.column_config.CheckboxColumn(
-                    "Delete?",
-                    help="Select this to delete the expense",
-                    default=False,
-                ),
-            },
-            disabled=["Expense Number", "Date", "Type", "Vendor", "Description"],
-        )
+                    key=f"mobile_amount_{i}"
+                )
+
+                delete_row = st.checkbox(
+                    "Delete this expense",
+                    value=False,
+                    key=f"mobile_delete_{i}"
+                )
+
+                mobile_rows.append({
+                    **row.to_dict(),
+                    "Category": new_category,
+                    "Amount": new_amount,
+                    "Delete?": delete_row,
+                })
+
+        edited_df = pd.DataFrame(mobile_rows)
 
         if st.button("💾 Save Changes", type="primary", use_container_width=True):
             all_entries_df = load_entries()
