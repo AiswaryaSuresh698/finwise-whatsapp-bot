@@ -606,6 +606,55 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+@media (max-width: 768px) {
+    div[data-testid="stDataFrame"],
+    div[data-testid="stDataEditor"] {
+        display: none !important;
+    }
+
+    .mobile-table {
+        display: block !important;
+        background: white;
+        border: 1px solid #BFDBFE;
+        border-radius: 16px;
+        overflow-x: auto;
+        padding: 8px;
+        margin-bottom: 16px;
+    }
+
+    .mobile-table table {
+        min-width: 900px;
+        width: 100%;
+        border-collapse: collapse;
+        background: white !important;
+    }
+
+    .mobile-table th,
+    .mobile-table td {
+        color: #0F172A !important;
+        background: white !important;
+        border-bottom: 1px solid #E5E7EB;
+        padding: 10px;
+        font-size: 13px;
+        white-space: nowrap;
+        text-align: left;
+    }
+
+    .mobile-table th {
+        font-weight: 900;
+    }
+}
+
+@media (min-width: 769px) {
+    .mobile-table {
+        display: none !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
 # -----------------------------
 # Login state
 # -----------------------------
@@ -1000,6 +1049,16 @@ if screen == "Screen 1 - Extracted Data":
         ).fillna(0)
         display_df["Delete?"] = False
 
+        # Mobile-friendly table view
+        mobile_display_df = display_df.copy()
+        mobile_display_df["Amount"] = mobile_display_df["Amount"].apply(lambda x: f"₹{float(x):,.2f}")
+
+        st.markdown(
+            f'<div class="mobile-table">{mobile_table_html(mobile_display_df)}</div>',
+            unsafe_allow_html=True
+        )
+
+        # Desktop editable table
         edited_df = st.data_editor(
             display_df,
             use_container_width=True,
