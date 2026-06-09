@@ -655,6 +655,22 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+@media (max-width: 768px) {
+    .st-key-desktop_expense_editor {
+        display: none !important;
+    }
+}
+
+@media (min-width: 769px) {
+    .st-key-mobile_expense_editor {
+        display: none !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
 # -----------------------------
 # Login state
 # -----------------------------
@@ -1049,15 +1065,6 @@ if screen == "Screen 1 - Extracted Data":
         ).fillna(0)
         display_df["Delete?"] = False
 
-        # Mobile-friendly table view
-        mobile_display_df = display_df.copy()
-        mobile_display_df["Amount"] = mobile_display_df["Amount"].apply(lambda x: f"₹{float(x):,.2f}")
-
-        st.markdown(
-            f'<div class="mobile-table">{mobile_table_html(mobile_display_df)}</div>',
-            unsafe_allow_html=True
-        )
-
         category_options = [
             "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent", "Salary",
             "Software", "Office Supplies", "Vehicle", "Professional Fees",
@@ -1067,56 +1074,87 @@ if screen == "Screen 1 - Extracted Data":
             "Parotta", "Marketing"
         ]
 
-        mobile_rows = []
-        st.info("For full table view, please log in from desktop.")
+        with st.container(key="desktop_expense_editor"):
+            edited_df = st.data_editor(
+                display_df,
+                use_container_width=True,
+                num_rows="fixed",
+                hide_index=True,
+                height=360,
+                key="screen1_expense_editor",
+                column_config={
+                    "Category": st.column_config.SelectboxColumn(
+                        "Category",
+                        options=category_options,
+                        required=True,
+                    ),
+                    "Amount": st.column_config.NumberColumn(
+                        "Amount",
+                        min_value=0.0,
+                        step=1.0,
+                        format="₹%.2f",
+                    ),
+                    "Delete?": st.column_config.CheckboxColumn(
+                        "Delete?",
+                        help="Select this to delete the expense",
+                        default=False,
+                    ),
+                },
+                disabled=["Expense Number", "Date", "Type", "Vendor", "Description"],
+            )
 
-        st.markdown("#### Mobile Edit View")
+        with st.container(key="mobile_expense_editor"):
+            st.info("For full table view, please log in from desktop.")
+            st.markdown("#### Mobile Edit View")
 
-        for i, row in display_df.iterrows():
-            with st.expander(
-                f'{row["Expense Number"]} • {row["Vendor"]} • ₹{float(row["Amount"]):,.2f}',
-                expanded=False
-            ):
-                st.write(f'**Date:** {row["Date"]}')
-                st.write(f'**Type:** {row["Type"]}')
-                st.write(f'**Description:** {row["Description"]}')
+            mobile_rows = []
 
-                current_category = str(row.get("Category", "Uncategorized"))
-                category_index = (
-                    category_options.index(current_category)
-                    if current_category in category_options
-                    else category_options.index("Uncategorized")
-                )
+            for i, row in display_df.iterrows():
+                with st.expander(
+                    f'{row["Expense Number"]} • {row["Date"]} • {row["Vendor"]} • ₹{float(row["Amount"]):,.2f}',
+                    expanded=False
+                ):
+                    st.write(f'**Date:** {row["Date"]}')
+                    st.write(f'**Type:** {row["Type"]}')
+                    st.write(f'**Vendor:** {row["Vendor"]}')
+                    st.write(f'**Description:** {row["Description"]}')
 
-                new_category = st.selectbox(
-                    "Category",
-                    category_options,
-                    index=category_index,
-                    key=f"mobile_category_{i}"
-                )
+                    current_category = str(row.get("Category", "Uncategorized"))
+                    category_index = (
+                        category_options.index(current_category)
+                        if current_category in category_options
+                        else category_options.index("Uncategorized")
+                    )
 
-                new_amount = st.number_input(
-                    "Amount",
-                    min_value=0.0,
-                    value=float(row["Amount"]),
-                    step=1.0,
-                    key=f"mobile_amount_{i}"
-                )
+                    new_category = st.selectbox(
+                        "Category",
+                        category_options,
+                        index=category_index,
+                        key=f"mobile_category_{i}"
+                    )
 
-                delete_row = st.checkbox(
-                    "Delete this expense",
-                    value=False,
-                    key=f"mobile_delete_{i}"
-                )
+                    new_amount = st.number_input(
+                        "Amount",
+                        min_value=0.0,
+                        value=float(row["Amount"]),
+                        step=1.0,
+                        key=f"mobile_amount_{i}"
+                    )
 
-                mobile_rows.append({
-                    **row.to_dict(),
-                    "Category": new_category,
-                    "Amount": new_amount,
-                    "Delete?": delete_row,
-                })
+                    delete_row = st.checkbox(
+                        "Delete this expense",
+                        value=False,
+                        key=f"mobile_delete_{i}"
+                    )
 
-        edited_df = pd.DataFrame(mobile_rows)
+                    mobile_rows.append({
+                        **row.to_dict(),
+                        "Category": new_category,
+                        "Amount": new_amount,
+                        "Delete?": delete_row,
+                    })
+
+            edited_df_mobile = pd.DataFrame(mobile_rows)
 
         if st.button("💾 Save Changes", type="primary", use_container_width=True):
             all_entries_df = load_entries()
