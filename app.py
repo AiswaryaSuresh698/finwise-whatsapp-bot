@@ -1000,141 +1000,41 @@ if screen == "Screen 1 - Extracted Data":
         ).fillna(0)
         display_df["Delete?"] = False
 
-        is_mobile = st.toggle("📱 Mobile view", value=False)
+        edited_df = st.data_editor(
+            display_df,
+            use_container_width=True,
+            num_rows="fixed",
+            hide_index=True,
+            height=360,
+            key="screen1_expense_editor",
+            column_config={
+                "Category": st.column_config.SelectboxColumn(
+                    "Category",
+                    options=[
+                        "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent", "Salary",
+                        "Software", "Office Supplies", "Vehicle", "Professional Fees",
+                        "Insurance", "Travel", "Income", "Uncategorized",
+                        "Milk", "Chicken", "Rice", "Brownie", "Butter",
+                        "Soap Oil", "Cylinder", "Frozen", "Ice Cream",
+                        "Parotta", "Marketing"
+                    ],
+                    required=True,
+                ),
+                "Amount": st.column_config.NumberColumn(
+                    "Amount",
+                    min_value=0.0,
+                    step=1.0,
+                    format="₹%.2f",
+                ),
+                "Delete?": st.column_config.CheckboxColumn(
+                    "Delete?",
+                    help="Select this to delete the expense",
+                    default=False,
+                ),
+            },
+            disabled=["Expense Number", "Date", "Type", "Vendor", "Description"],
+        )
 
-        if is_mobile:
-            edited_rows = []
-
-            category_options = [
-                "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
-                "Software", "Office Supplies", "Vehicle", "Professional Fees",
-                "Insurance", "Travel", "Income", "Uncategorized","Salary"
-                "Milk",
-                "Chicken",
-                "Rice",
-                "Brownie",
-                "Butter",
-                "Soap Oil",
-                "Cylinder",
-                "Frozen",
-                "Ice Cream",
-                "Parotta",
-                "Marketing"
-            ]
-
-            for i, row in display_df.iterrows():
-                st.markdown(
-                    f"""
-                    <div style="
-                        background:white;
-                        border:1px solid #BFDBFE;
-                        border-radius:14px;
-                        padding:12px;
-                        margin-bottom:8px;
-                    ">
-                        <div style="display:flex; justify-content:space-between; gap:10px;">
-                            <div style="font-weight:900;">{row["Expense Number"]}</div>
-                            <div style="font-weight:800;">₹{float(row["Amount"]):,.2f}</div>
-                        </div>
-                        <div style="font-size:14px; margin-top:6px;">
-                            <strong>{row["Vendor"]}</strong>
-                        </div>
-                        <div style="font-size:13px; color:#475569; margin-top:4px;">
-                            {row["Date"]} • {row["Description"]}
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                current_category = str(row.get("Category", "Uncategorized"))
-                category_index = (
-                    category_options.index(current_category)
-                    if current_category in category_options
-                    else category_options.index("Uncategorized")
-                )
-
-                c1, c2 = st.columns([1.2, 1])
-
-                with c1:
-                    new_category = st.selectbox(
-                        "Category",
-                        category_options,
-                        index=category_index,
-                        key=f"mobile_cat_{i}",
-                        label_visibility="collapsed",
-                    )
-
-                with c2:
-                    new_amount = st.number_input(
-                        "Amount",
-                        min_value=0.0,
-                        value=float(row["Amount"]),
-                        step=1.0,
-                        key=f"mobile_amt_{i}",
-                        label_visibility="collapsed",
-                    )
-
-                delete_row = st.checkbox(
-                    "Delete this expense",
-                    value=False,
-                    key=f"mobile_delete_{i}",
-                )
-
-                edited_rows.append({
-                    **row.to_dict(),
-                    "Category": new_category,
-                    "Amount": new_amount,
-                    "Delete?": delete_row,
-                })
-
-                st.divider()
-
-            edited_df = pd.DataFrame(edited_rows)
-
-        else:
-            edited_df = st.data_editor(
-                display_df,
-                use_container_width=True,
-                num_rows="fixed",
-                hide_index=True,
-                height=360,
-                key="screen1_expense_editor",
-                column_config={
-                    "Category": st.column_config.SelectboxColumn(
-                        "Category",
-                        options=[
-                            "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent", "Salary",
-                            "Software", "Office Supplies", "Vehicle", "Professional Fees",
-                            "Insurance", "Travel", "Income", "Uncategorized", "Milk",
-                            "Chicken",
-                            "Rice",
-                            "Brownie",
-                            "Butter",
-                            "Soap Oil",
-                            "Cylinder",
-                            "Frozen",
-                            "Ice Cream",
-                            "Parotta",
-                            "Marketing"
-                        ],
-                        required=True,
-                    ),
-                    "Amount": st.column_config.NumberColumn(
-                        "Amount",
-                        min_value=0.0,
-                        step=1.0,
-                        format="₹%.2f",
-                    ),
-                    "Delete?": st.column_config.CheckboxColumn(
-                        "Delete?",
-                        help="Select this to delete the expense",
-                        default=False,
-                    ),
-                },
-                disabled=["Expense Number", "Date", "Type", "Vendor", "Description"],
-            )
-                
         if st.button("💾 Save Changes", type="primary", use_container_width=True):
             all_entries_df = load_entries()
 
