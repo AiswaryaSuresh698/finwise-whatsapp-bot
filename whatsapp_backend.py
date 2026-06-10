@@ -29,6 +29,23 @@ from storage_utils import (
     clean_phone,
     get_owner_phone_for_uploader,
 )
+from storage_utils import init_db, load_entries, S3_BUCKET_NAME
+
+try:
+    init_db()
+    df = load_entries()
+
+    print("=" * 60, flush=True)
+    print("AWS DATABASE CONNECTED", flush=True)
+    print("ROWS:", len(df), flush=True)
+    print("S3_BUCKET:", S3_BUCKET_NAME, flush=True)
+    print("=" * 60, flush=True)
+
+except Exception as e:
+    print("=" * 60, flush=True)
+    print("AWS DATABASE ERROR", flush=True)
+    print(str(e), flush=True)
+    print("=" * 60, flush=True)
 
 
 load_dotenv()
