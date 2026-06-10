@@ -1,19 +1,14 @@
 import os
+import random
+import time
 from io import BytesIO
+from datetime import date, timedelta
 
-from click import style
 import pandas as pd
 import qrcode
 import streamlit as st
-import random
-import time
 from twilio.rest import Client
 from dotenv import load_dotenv
-load_dotenv()
-import os
-import random
-import time
-from twilio.rest import Client
 
 from storage_utils import (
     DEFAULT_FOLDERS,
@@ -27,10 +22,26 @@ from storage_utils import (
     validate_login,
     reset_password,
     clean_phone,
+    get_presigned_s3_url,
+    append_petpooja_entry,
+    init_db,
 )
 
-ensure_storage()
+load_dotenv()
+
 st.set_page_config(page_title="FinWise Bills", layout="wide")
+
+init_db()
+try:
+    df = load_entries()
+    print("AWS DATABASE CONNECTED")
+    
+except Exception as e:
+    print("DATABASE ERROR:", e)
+
+ensure_storage()
+
+
 
 # -----------------------------
 # Helpers
@@ -1307,8 +1318,8 @@ if screen == "Screen 1 - Extracted Data":
                 duplicate_count = len(petpooja_report_df) - len(new_petpooja_df)
 
                 if not new_petpooja_df.empty:
-                    updated_petpooja_df = pd.concat([existing_petpooja_df, new_petpooja_df], ignore_index=True)
-                    save_petpooja_entries(updated_petpooja_df)
+                    for _, row in new_petpooja_df.iterrows():
+                        append_petpooja_entry(row.to_dict())
 
                 st.success(f"Petpooja processed. Added {len(new_petpooja_df)} new records. Skipped {duplicate_count} duplicates.")
         except Exception as e:
@@ -1445,9 +1456,10 @@ elif screen == "Screen 2 - Folder View":
                             unsafe_allow_html=True
                         )
 
-                        if image_path and os.path.exists(image_path):
+                        if image_path:
                             with st.expander("View bill image"):
-                                st.image(image_path, width=450)
+                                display_image_path = get_presigned_s3_url(image_path)
+                                st.image(display_image_path, width=450)
                         else:
                             st.caption("No image available.")
 

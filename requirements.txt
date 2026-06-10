@@ -12,3 +12,6 @@ qrcode
 gunicorn
 gspread
 google-auth
+sqlalchemy
+psycopg2-binary
+boto3
