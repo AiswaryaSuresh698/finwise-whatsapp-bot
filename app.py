@@ -32,12 +32,26 @@ load_dotenv()
 st.set_page_config(page_title="FinWise Bills", layout="wide")
 
 init_db()
+
 try:
+    from storage_utils import load_entries
+
     df = load_entries()
+
+    print("=" * 50)
     print("AWS DATABASE CONNECTED")
-    
+    print("ROWS:", len(df))
+    print("=" * 50)
+
 except Exception as e:
-    print("DATABASE ERROR:", e)
+    print("=" * 50)
+    print("DATABASE ERROR")
+    print(str(e))
+    print("=" * 50)
+
+from storage_utils import S3_BUCKET_NAME
+
+print("S3_BUCKET:", S3_BUCKET_NAME)
 
 ensure_storage()
 
