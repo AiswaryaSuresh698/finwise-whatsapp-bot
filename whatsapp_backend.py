@@ -1,73 +1,45 @@
 import os
-import requests
-from io import BytesIO
-import json
-from storage_utils import read_sheet, write_sheet
-import pandas as pd
-from twilio.rest import Client as TwilioClient
 import re
+import json
+import time
+import hashlib
+import threading
+import requests
+import pandas as pd
+
+from io import BytesIO
 from datetime import datetime, timedelta
 from difflib import get_close_matches
-import time
-import threading
 
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client as TwilioClient
 from dotenv import load_dotenv
 from PIL import Image
-from storage_utils import load_entries, save_entries, update_vendor_memory, get_owner_phone_for_uploader
-import pandas as pd
-import hashlib
-from storage_utils import load_entries
-from sqlalchemy import create_engine, text
-import os
+
+load_dotenv()
 
 from receipt_ai import get_client, extract_bill_details
+
 from storage_utils import (
+    init_db,
     append_entry,
     save_image_to_folder,
     ensure_storage,
     apply_vendor_memory,
     clean_phone,
     get_owner_phone_for_uploader,
+    update_vendor_memory,
+    engine,
 )
-from storage_utils import init_db, load_entries, S3_BUCKET_NAME
 
-try:
-    init_db()
-    df = load_entries()
+from sqlalchemy import text
 
-    print("=" * 60, flush=True)
-    print("AWS DATABASE CONNECTED", flush=True)
-    print("ROWS:", len(df), flush=True)
-    print("S3_BUCKET:", S3_BUCKET_NAME, flush=True)
-    print("=" * 60, flush=True)
-
-except Exception as e:
-    print("=" * 60, flush=True)
-    print("AWS DATABASE ERROR", flush=True)
-    print(str(e), flush=True)
-    print("=" * 60, flush=True)
-
-try:
-    db_url = os.getenv("DATABASE_URL")
-    print("DB URL FOUND:", bool(db_url))
-
-    engine = create_engine(db_url)
-
-    with engine.connect() as conn:
-        result = conn.execute(text("SELECT version()"))
-        print("DATABASE CONNECTION SUCCESS")
-        print(result.fetchone())
-
-except Exception as e:
-    print("DATABASE CONNECTION FAILED")
-    print(type(e).__name__)
-    print(str(e))
-
+init_db()
+ensure_storage()
 
 load_dotenv()
-ensure_storage()
+
 
 app = Flask(__name__)
 
@@ -94,59 +66,96 @@ def send_whatsapp_message(to_number, message):
         body=message
     )
 
-
-def load_pending_category():
-    df = read_sheet("pending_category")
-
-    if df.empty:
-        return {}
-
-    pending = {}
-
-    for _, row in df.iterrows():
-        phone = str(row.get("phone", "")).strip()
-        entry_json = row.get("entry_json", "")
-
-        if phone and entry_json:
-            try:
-                pending[phone] = json.loads(entry_json)
-            except Exception:
-                pass
-
-    return pending
+def init_pending_category_table():
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS pending_category (
+                phone TEXT PRIMARY KEY,
+                entry_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
 
 
-def save_pending_category(pending):
-    rows = []
+def get_pending_entry(phone):
+    init_pending_category_table()
 
-    for phone, entry in pending.items():
-        rows.append({
-            "phone": str(phone),
-            "entry_json": json.dumps(entry)
-        })
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT entry_json
+                FROM pending_category
+                WHERE phone = :phone
+                LIMIT 1
+            """),
+            {"phone": str(phone)}
+        ).fetchone()
 
-    df = pd.DataFrame(rows)
-    write_sheet("pending_category", df)
+    if not row:
+        return None
+
+    try:
+        return json.loads(row.entry_json)
+    except Exception:
+        return None
+
+
+def save_pending_entry(phone, entry):
+    init_pending_category_table()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO pending_category (phone, entry_json)
+                VALUES (:phone, :entry_json)
+                ON CONFLICT (phone)
+                DO UPDATE SET
+                    entry_json = EXCLUDED.entry_json,
+                    created_at = CURRENT_TIMESTAMP
+            """),
+            {
+                "phone": str(phone),
+                "entry_json": json.dumps(entry)
+            }
+        )
 
 
 def clear_pending_category(phone):
-    pending = load_pending_category()
-    phone = str(phone)
+    init_pending_category_table()
 
-    if phone in pending:
-        del pending[phone]
-
-    save_pending_category(pending)
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM pending_category WHERE phone = :phone"),
+            {"phone": str(phone)}
+        )
 CATEGORY_OPTIONS = [
-    "Milk", "Chicken", "Rice", "Frozen Foods", "Ice Cream", "Cylinder",
-    "Salary", "Marketing", "Utilities", "Rent", "Software", "Vehicle",
-    "Insurance", "Travel", "Professional Fees", "Office Supplies",
-    "Income", "Uncategorized"
+    "Grocery",
+    "Gas",
+    "Internet",
+    "Utilities",
+    "Meals",
+    "Rent",
+    "Salary",
+    "Software",
+    "Office Supplies",
+    "Vehicle",
+    "Professional Fees",
+    "Insurance",
+    "Travel",
+    "Income",
+    "Uncategorized",
+    "Milk",
+    "Chicken",
+    "Rice",
+    "Frozen Foods",
+    "Ice Cream",
+    "Cylinder",
+    "Marketing",
 ]
 
 CATEGORY_ALIASES = {
-    "groceries": "Uncategorized",
-    "grocery": "Uncategorized",
+    "groceries": "Grocery",
+    "grocery": "Grocery",
     "frozen": "Frozen Foods",
     "icecream": "Ice Cream",
     "ice cream": "Ice Cream",
@@ -156,7 +165,6 @@ CATEGORY_ALIASES = {
     "cylinder": "Cylinder",
     "gas cylinder": "Cylinder",
 }
-
 
 def match_category(user_text):
     text = str(user_text or "").lower().strip()
@@ -258,15 +266,18 @@ def make_expense_duplicate_key(from_number, extracted):
 
 
 def is_duplicate_expense(duplicate_key):
-    entries_df = load_entries()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT id
+                FROM entries
+                WHERE duplicate_key = :duplicate_key
+                LIMIT 1
+            """),
+            {"duplicate_key": str(duplicate_key)}
+        ).fetchone()
 
-    if entries_df.empty:
-        return False
-
-    if "duplicate_key" not in entries_df.columns:
-        return False
-
-    return duplicate_key in entries_df["duplicate_key"].astype(str).values
+    return row is not None
 
 def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url, media_type):
     request_start = time.time()
@@ -358,9 +369,7 @@ def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url,
         }
 
         if not has_vendor_memory:
-            pending = load_pending_category()
-            pending[uploader_phone] = entry
-            save_pending_category(pending)
+            save_pending_entry(uploader_phone, entry)
 
             send_whatsapp_message(
                 raw_from,
@@ -423,11 +432,12 @@ def whatsapp():
     ]
 
     if num_media == 0:
-        pending = load_pending_category()
-        print("Checking pending for:", uploader_phone, flush=True)
-        print("Pending keys:", list(pending.keys()), flush=True)
+        pending_entry = get_pending_entry(uploader_phone)
 
-        if uploader_phone in pending:
+        print("Checking pending for:", uploader_phone, flush=True)
+        print("Has pending:", pending_entry is not None, flush=True)
+
+        if pending_entry:
             category = incoming_msg.title()
 
             if not category:
@@ -443,13 +453,15 @@ def whatsapp():
                 )
                 return str(response)
 
-            pending_entry = pending[uploader_phone]
+
             pending_entry["category"] = category
             pending_entry["folder"] = category
 
             print("Saving pending entry:", pending_entry, flush=True)
 
+            save_start = time.time()
             append_entry(pending_entry)
+            print("CONFIRMED ENTRY SAVE:", round(time.time() - save_start, 2), "sec", flush=True)
 
             update_vendor_memory(
                 user_phone=owner_phone,
@@ -524,9 +536,7 @@ def whatsapp():
                 ),
             }
 
-            pending = load_pending_category()
-            pending[uploader_phone] = entry
-            save_pending_category(pending)
+            save_pending_entry(uploader_phone, entry)
 
             response.message(
                 f"I found a new vendor/text expense.\n\n"
