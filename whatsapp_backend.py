@@ -19,6 +19,8 @@ from storage_utils import load_entries, save_entries, update_vendor_memory, get_
 import pandas as pd
 import hashlib
 from storage_utils import load_entries
+from sqlalchemy import create_engine, text
+import os
 
 from receipt_ai import get_client, extract_bill_details
 from storage_utils import (
@@ -46,6 +48,22 @@ except Exception as e:
     print("AWS DATABASE ERROR", flush=True)
     print(str(e), flush=True)
     print("=" * 60, flush=True)
+
+try:
+    db_url = os.getenv("DATABASE_URL")
+    print("DB URL FOUND:", bool(db_url))
+
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT version()"))
+        print("DATABASE CONNECTION SUCCESS")
+        print(result.fetchone())
+
+except Exception as e:
+    print("DATABASE CONNECTION FAILED")
+    print(type(e).__name__)
+    print(str(e))
 
 
 load_dotenv()
