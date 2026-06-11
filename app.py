@@ -66,26 +66,6 @@ def cached_load_entries():
 def cached_load_petpooja_entries():
     return load_petpooja_entries()
 
-try:
-    from storage_utils import load_entries
-
-    df = cached_load_entries()
-
-    print("=" * 50)
-    print("AWS DATABASE CONNECTED")
-    print("ROWS:", len(df))
-    print("=" * 50)
-
-except Exception as e:
-    print("=" * 50)
-    print("DATABASE ERROR")
-    print(str(e))
-    print("=" * 50)
-
-from storage_utils import S3_BUCKET_NAME
-
-print("S3_BUCKET:", S3_BUCKET_NAME)
-
 ensure_storage()
 
 
@@ -951,16 +931,7 @@ if not st.session_state.logged_in:
         st.markdown('<div style="text-align:center;color:black;font-weight:700;margin-top:26px;">🛡️ Your data is secure and organized privately.</div>', unsafe_allow_html=True)
     st.stop()
 
-st.markdown("""
-<div style="text-align:center; margin-top:30px; font-size:14px; color:#475569;">
-    <a href="/Privacy_Policy" target="_self" style="color:#2563EB; text-decoration:none; margin-right:18px;">
-        Privacy Policy
-    </a>
-    <a href="/Terms_of_Service" target="_self" style="color:#2563EB; text-decoration:none;">
-        Terms of Service
-    </a>
-</div>
-""", unsafe_allow_html=True)
+
 
 # -----------------------------
 # Header
@@ -990,45 +961,13 @@ with top_right:
     )
     st.link_button("🟢 Open WhatsApp", whatsapp_link, use_container_width=True)
 
-screen = st.sidebar.radio("Go to", ["Screen 1 - Extracted Data", "Screen 2 - Folder View"])
+tab1, tab2 = st.tabs(["📊 Dashboard", "📁 Folder View"])
 
-with st.sidebar:
-    st.markdown(f"Logged in as: {phone}")
-
-    if st.sidebar.button("Logout", use_container_width=True):
-        st.session_state.logged_in = False
-        st.session_state.user_phone = ""
-
-        st.query_params.clear()
-
-        st.rerun()
-    
-    if st.sidebar.button("🔄 Refresh Data", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
-
-    st.markdown("---")
-
-    st.markdown("### 📚 Quick Training")
-
-    st.markdown(
-        """
-        <a href="#" target="_blank" style="
-            text-decoration:none;
-            font-size:16px;
-            font-weight:600;
-            color:#2563EB;
-        ">
-            ▶️ Watch 3-Minute Setup Guide
-        </a>
-        """,
-        unsafe_allow_html=True,
-)
 
 # -----------------------------
 # Screen 1
 # -----------------------------
-if screen == "Screen 1 - Extracted Data":
+with tab1:
     from datetime import date, timedelta
 
     date_filter = st.selectbox(
@@ -1448,7 +1387,7 @@ if screen == "Screen 1 - Extracted Data":
     output.seek(0)
     st.download_button("⬇️ Download Excel", data=output, file_name="finwise_extracted_bills.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-elif screen == "Screen 2 - Folder View":
+with tab2:
 
     st.subheader("📁 File Explorer")
 
