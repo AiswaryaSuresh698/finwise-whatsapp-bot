@@ -29,7 +29,18 @@ from storage_utils import (
 
 load_dotenv()
 
-st.set_page_config(page_title="FinWise Bills", layout="wide")
+st.set_page_config(
+    page_title="FinWise Bills",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+st.markdown("""
+<style>
+[data-testid="stSidebar"] {
+    display:none;
+}
+</style>
+""", unsafe_allow_html=True)
 
 st.markdown("""
 <style>
@@ -45,13 +56,18 @@ def initialize_database():
     return True
 
 initialize_database()
-
-@st.cache_data(ttl=30)
+@st.cache_data(
+    ttl=30,
+    show_spinner=False
+)@st.cache_data(ttl=30)
 def cached_load_entries():
     return load_entries()
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(
+    ttl=30,
+    show_spinner=False
+)
 def cached_load_petpooja_entries():
     return load_petpooja_entries()
 
