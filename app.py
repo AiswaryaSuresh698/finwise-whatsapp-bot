@@ -922,6 +922,16 @@ if not st.session_state.logged_in:
                         st.error(message)
 
         st.markdown('<div style="text-align:center;color:black;font-weight:700;margin-top:26px;">🛡️ Your data is secure and organized privately.</div>', unsafe_allow_html=True)
+        st.markdown("""
+        <div style="text-align:center; margin-top:18px; font-size:14px;">
+            <a href="/Privacy_Policy" target="_self" style="color:#2563EB; text-decoration:none; margin-right:18px;">
+                Privacy Policy
+            </a>
+            <a href="/Terms_of_Service" target="_self" style="color:#2563EB; text-decoration:none;">
+                Terms of Service
+            </a>
+        </div>
+        """, unsafe_allow_html=True)
     st.stop()
 
 
