@@ -31,12 +31,34 @@ load_dotenv()
 
 st.set_page_config(page_title="FinWise Bills", layout="wide")
 
-init_db()
+st.markdown("""
+<style>
+[data-testid="stSidebarNav"] {
+    display: none !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+@st.cache_resource
+def initialize_database():
+    init_db()
+    return True
+
+initialize_database()
+
+@st.cache_data(ttl=30)
+def cached_load_entries():
+    return load_entries()
+
+
+@st.cache_data(ttl=30)
+def cached_load_petpooja_entries():
+    return load_petpooja_entries()
 
 try:
     from storage_utils import load_entries
 
-    df = load_entries()
+    df = cached_load_entries()
 
     print("=" * 50)
     print("AWS DATABASE CONNECTED")
@@ -259,6 +281,7 @@ def send_password_reset_code(phone):
     st.write("Sending from:", TWILIO_WHATSAPP_FROM)
 
     return True
+
 
 # -----------------------------
 # CSS
@@ -917,7 +940,16 @@ if not st.session_state.logged_in:
         st.markdown('<div style="text-align:center;color:black;font-weight:700;margin-top:26px;">🛡️ Your data is secure and organized privately.</div>', unsafe_allow_html=True)
     st.stop()
 
-
+st.markdown("""
+<div style="text-align:center; margin-top:30px; font-size:14px; color:#475569;">
+    <a href="/Privacy_Policy" target="_self" style="color:#2563EB; text-decoration:none; margin-right:18px;">
+        Privacy Policy
+    </a>
+    <a href="/Terms_of_Service" target="_self" style="color:#2563EB; text-decoration:none;">
+        Terms of Service
+    </a>
+</div>
+""", unsafe_allow_html=True)
 
 # -----------------------------
 # Header
@@ -961,6 +993,7 @@ with st.sidebar:
         st.rerun()
     
     if st.sidebar.button("🔄 Refresh Data", use_container_width=True):
+        st.cache_data.clear()
         st.rerun()
 
     st.markdown("---")
@@ -1033,7 +1066,7 @@ if screen == "Screen 1 - Extracted Data":
     
 
     # WhatsApp entries
-    df = load_entries()
+    df = cached_load_entries()
     df = filter_by_phone(df, phone)
     if not df.empty and "is_deleted" in df.columns:
         df = df[df["is_deleted"].astype(str).str.lower() != "yes"].copy()
@@ -1053,7 +1086,7 @@ if screen == "Screen 1 - Extracted Data":
     
 
     # Saved Petpooja entries
-    petpooja_saved_df = normalize_saved_petpooja_df(load_petpooja_entries())
+    petpooja_saved_df = normalize_saved_petpooja_df(cached_load_petpooja_entries())
     if not petpooja_saved_df.empty:
         petpooja_saved_df = petpooja_saved_df[
             petpooja_saved_df["user_phone"].astype(str).apply(clean_phone) == clean_phone(phone)
@@ -1276,6 +1309,7 @@ if screen == "Screen 1 - Extracted Data":
             if st.button("💾 Save Changes", type="primary", use_container_width=True, key="desktop_save_expenses"):
                 save_edited_expenses(edited_df, original_df, phone)
                 st.success("Desktop changes saved.")
+                st.cache_data.clear()
                 st.rerun()
 
             if st.button("🗑️ Delete Selected Expenses", use_container_width=True, key="desktop_delete_expenses"):
@@ -1285,13 +1319,17 @@ if screen == "Screen 1 - Extracted Data":
                     st.warning("Please select at least one expense to delete.")
                 else:
                     st.success(f"Deleted {deleted_count} expense(s).")
+                    st.cache_data.clear()
                     st.rerun()
+
+
 
 
         with st.container(key="mobile_expense_buttons"):
             if st.button("💾 Save Mobile Changes", type="primary", use_container_width=True, key="mobile_save_expenses"):
                 save_edited_expenses(edited_df_mobile, original_df, phone)
                 st.success("Mobile changes saved.")
+                st.cache_data.clear()
                 st.rerun()
 
             if st.button("🗑️ Delete Selected Mobile Expenses", use_container_width=True, key="mobile_delete_expenses"):
@@ -1301,6 +1339,7 @@ if screen == "Screen 1 - Extracted Data":
                     st.warning("Please select at least one expense to delete.")
                 else:
                     st.success(f"Deleted {deleted_count} expense(s).")
+                    st.cache_data.clear()
                     st.rerun()
 
     st.write("### Petpooja Sales Summary")
@@ -1402,7 +1441,8 @@ elif screen == "Screen 2 - Folder View":
 
     st.subheader("📁 File Explorer")
 
-    df = load_entries()
+    
+    df = cached_load_entries()
     df = filter_by_phone(df, phone)
 
     if not df.empty and "is_deleted" in df.columns:
@@ -1492,6 +1532,13 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True,
 )
-st.markdown("---")
-st.markdown("[Privacy Policy](./Privacy_Policy)")
-st.markdown("[Terms of Service](./Terms_of_Service)")
+st.markdown("""
+<div style="text-align:center; margin-top:30px; font-size:14px; color:#475569;">
+    <a href="/Privacy_Policy" target="_self" style="color:#2563EB; text-decoration:none; margin-right:18px;">
+        Privacy Policy
+    </a>
+    <a href="/Terms_of_Service" target="_self" style="color:#2563EB; text-decoration:none;">
+        Terms of Service
+    </a>
+</div>
+""", unsafe_allow_html=True)
