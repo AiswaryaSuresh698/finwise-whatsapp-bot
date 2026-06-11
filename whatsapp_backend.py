@@ -35,24 +35,39 @@ from storage_utils import (
 
 from sqlalchemy import text
 
-init_db()
-ensure_storage()
+
 
 load_dotenv()
 
 
 app = Flask(__name__)
+_initialized = False
+twilio_client = None
+client = None
+
+def lazy_init():
+    global _initialized, twilio_client, client
+
+    if _initialized:
+        return
+
+    init_db()
+    ensure_storage()
+
+    twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    client = get_client(OPENAI_API_KEY)
+
+    _initialized = True
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-client = get_client(OPENAI_API_KEY)
 
 PENDING_CATEGORY_FILE = "data/pending_category.json"
 
 
-twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 
 
@@ -253,7 +268,7 @@ def extract_vendor(text, amount, category):
 
 @app.route("/", methods=["GET"])
 def home():
-    return "FinWise WhatsApp bot is running."
+    return "FinWise WhatsApp bot is running.", 200
 
 def make_expense_duplicate_key(from_number, extracted):
     vendor = str(extracted.get("vendor", "")).strip().lower()
@@ -280,6 +295,7 @@ def is_duplicate_expense(duplicate_key):
     return row is not None
 
 def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url, media_type):
+    lazy_init()
     request_start = time.time()
 
     try:
@@ -401,6 +417,7 @@ def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url,
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
+    lazy_init()
     response = MessagingResponse()
 
     print("\n========== NEW WHATSAPP REQUEST ==========", flush=True)
