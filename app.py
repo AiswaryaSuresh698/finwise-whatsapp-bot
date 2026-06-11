@@ -1492,3 +1492,6 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True,
 )
+st.markdown("---")
+st.markdown("[Privacy Policy](./Privacy_Policy)")
+st.markdown("[Terms of Service](./Terms_of_Service)")
