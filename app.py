@@ -32,15 +32,8 @@ load_dotenv()
 st.set_page_config(
     page_title="FinWise Bills",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
-st.markdown("""
-<style>
-[data-testid="stSidebar"] {
-    display:none;
-}
-</style>
-""", unsafe_allow_html=True)
 
 st.markdown("""
 <style>
@@ -940,6 +933,37 @@ whatsapp_number = "+14155238886"
 whatsapp_link = f"https://wa.me/{whatsapp_number.replace('+', '')}"
 phone = st.session_state.user_phone
 
+with st.sidebar:
+    st.markdown("### 📊 FinWise")
+    st.markdown(f"**Logged in as:** {phone}")
+
+    screen = st.radio(
+        "Navigation",
+        [
+            "📊 Dashboard",
+            "📁 Folder View",
+            "⚙️ Settings",
+            "🎓 Training",
+        ],
+        label_visibility="collapsed",
+    )
+
+    st.markdown("---")
+
+    if st.button("🔄 Refresh Data", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+    if st.button("🚪 Logout", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.user_phone = ""
+        st.query_params.clear()
+        st.rerun()
+
+    st.markdown("---")
+    st.markdown("### 🎓 Quick Training")
+    st.markdown("[▶️ Watch 3-Minute Setup Guide](#)")
+
 top_left, top_right = st.columns([1.1, 1])
 with top_left:
     st.markdown(
@@ -961,13 +985,13 @@ with top_right:
     )
     st.link_button("🟢 Open WhatsApp", whatsapp_link, use_container_width=True)
 
-tab1, tab2 = st.tabs(["📊 Dashboard", "📁 Folder View"])
+
 
 
 # -----------------------------
 # Screen 1
 # -----------------------------
-with tab1:
+if screen == "📊 Dashboard":
     from datetime import date, timedelta
 
     date_filter = st.selectbox(
@@ -1387,7 +1411,7 @@ with tab1:
     output.seek(0)
     st.download_button("⬇️ Download Excel", data=output, file_name="finwise_extracted_bills.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-with tab2:
+elif screen == "📁 Folder View":
 
     st.subheader("📁 File Explorer")
 
@@ -1468,7 +1492,31 @@ with tab2:
                             st.caption("No image available.")
 
                         st.divider()
+elif screen == "⚙️ Settings":
+    st.subheader("⚙️ Settings")
+    st.info("Settings page will be added here.")
+    st.write("Account phone:", phone)
 
+elif screen == "🎓 Training":
+    st.subheader("🎓 Training")
+
+    st.markdown("""
+    ### How to use FinWise
+
+    **1. Send bill images on WhatsApp**  
+    Take a clear photo of the bill and send it to FinWise.
+
+    **2. Confirm category for new vendors**  
+    If FinWise sees a new vendor, reply with category like Grocery, Meals, Utilities, etc.
+
+    **3. Upload Petpooja report**  
+    Use the upload section in Dashboard to add daily or monthly sales reports.
+
+    **4. Review dashboard**  
+    Check income, expenses, net amount, and download Excel.
+
+    **Training video coming soon.**
+    """)
 # -----------------------------
 # Footer
 # -----------------------------
