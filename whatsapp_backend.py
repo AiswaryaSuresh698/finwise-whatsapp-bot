@@ -366,6 +366,71 @@ def is_duplicate_expense(duplicate_key):
 
     return row is not None
 
+def save_text_expense(intent_data, owner_phone, uploader_phone):
+    category = intent_data.get("category") or "Uncategorized"
+    vendor = intent_data.get("vendor") or "Manual Entry"
+    amount = float(intent_data.get("amount") or 0)
+    date_value = intent_data.get("date") or datetime.now().strftime("%Y-%m-%d")
+    description = intent_data.get("description") or "WhatsApp text expense"
+
+    memory_category, memory_folder = apply_vendor_memory(owner_phone, vendor)
+
+    if memory_category:
+        category = memory_category
+
+    folder = memory_folder if memory_folder else category
+
+    entry = {
+        "date": date_value,
+        "transaction_type": "expense",
+        "vendor": vendor.title(),
+        "user_phone": owner_phone,
+        "uploaded_by": uploader_phone,
+        "description": description,
+        "category": category,
+        "folder": folder,
+        "subtotal": amount,
+        "tax": 0,
+        "total": amount,
+        "currency": intent_data.get("currency", "INR"),
+        "confidence": "ai_text",
+        "reason": "Natural WhatsApp text entry",
+        "image_path": "",
+        "source": "WhatsApp Text",
+    }
+
+    entry["duplicate_key"] = make_expense_duplicate_key(owner_phone, entry)
+
+    if is_duplicate_expense(entry["duplicate_key"]):
+        return False, "This text expense was already uploaded earlier."
+
+    if category == "Uncategorized":
+        save_pending_entry(uploader_phone, entry)
+        return True, (
+            f"I understood this expense but need a category.\n\n"
+            f"Vendor: {vendor.title()}\n"
+            f"Amount: ₹{amount}\n"
+            f"Date: {date_value}\n\n"
+            f"Reply with category like Grocery, Chicken, Meals, Utilities."
+        )
+
+    append_entry(entry)
+
+    update_vendor_memory(
+        user_phone=owner_phone,
+        vendor=vendor,
+        category=category,
+        folder=folder,
+    )
+
+    return True, (
+        f"Saved expense ✅\n"
+        f"Vendor: {vendor.title()}\n"
+        f"Amount: ₹{amount}\n"
+        f"Date: {date_value}\n"
+        f"Category: {category}"
+    )
+
 def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url, media_type):
     lazy_init()
     request_start = time.time()
@@ -487,6 +552,49 @@ def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url,
         print("ERROR PROCESSING BILL:", str(e), flush=True)
         send_whatsapp_message(raw_from, f"Could not process the bill. Error: {str(e)}")
 
+def classify_whatsapp_text(user_text):
+    prompt = f"""
+Classify this WhatsApp message for a finance assistant.
+
+Message:
+{user_text}
+
+Return ONLY valid JSON:
+{{
+  "intent": "expense_entry" | "category_reply" | "finance_question" | "unknown",
+  "category": "",
+  "date": "YYYY-MM-DD",
+  "vendor": "",
+  "description": "",
+  "amount": null,
+  "currency": "INR"
+}}
+
+Rules:
+- If user is recording spending, use expense_entry.
+- If user only gives category like grocery/chicken/meals, use category_reply.
+- If user asks "how much", "show", "total", "spent", use finance_question.
+- If date missing for expense, use today: {datetime.now().strftime("%Y-%m-%d")}.
+- If category unclear, use "Uncategorized".
+- If vendor unclear, use "Manual Entry".
+"""
+
+    try:
+        result = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You classify WhatsApp finance assistant messages."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+        )
+
+        return json.loads(result.choices[0].message.content.strip())
+
+    except Exception as e:
+        print("TEXT CLASSIFY ERROR:", str(e), flush=True)
+        return {"intent": "unknown"}
+
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
     lazy_init()
@@ -514,11 +622,9 @@ def whatsapp():
     print("Body:", incoming_msg, flush=True)
     print("Media count:", num_media, flush=True)
 
-    allowed_categories = [
-        "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent","Salary",
-        "Software", "Office Supplies", "Vehicle", "Professional Fees",
-        "Insurance", "Travel", "Income", "Uncategorized"
-    ]
+
+    media_url = request.form.get("MediaUrl0")
+    media_type = request.form.get("MediaContentType0", "")
 
     if num_media == 0:
         pending_entry = get_pending_entry(uploader_phone)
@@ -526,22 +632,33 @@ def whatsapp():
         print("Checking pending for:", uploader_phone, flush=True)
         print("Has pending:", pending_entry is not None, flush=True)
 
-        if pending_entry:
-            category = incoming_msg.title()
+        quick_category = match_category(incoming_msg)
+
+        if pending_entry and quick_category and len(incoming_msg.split()) <= 3:
+            intent_data = {
+                "intent": "category_reply",
+                "category": quick_category,
+                "date": "",
+                "vendor": "",
+                "description": "",
+                "amount": None,
+                "currency": "INR",
+            }
+        else:
+            intent_data = classify_whatsapp_text(incoming_msg)
+        intent = intent_data.get("intent", "unknown")
+
+        print("TEXT INTENT:", intent_data, flush=True)
+
+        # Case 1: user is replying category for pending bill
+        if pending_entry and intent == "category_reply":
+            category = match_category(intent_data.get("category") or incoming_msg)
 
             if not category:
-                response.message("Please reply with a valid category. Example: Grocery, Gas, Meals, Utilities.")
-                return str(response)
-
-            if category not in allowed_categories:
                 response.message(
-                    f"'{category}' is not a valid category.\n\n"
-                    "Please reply with one of these:\n"
-                    "Grocery, Gas, Internet, Utilities, Meals, Rent, Software, "
-                    "Office Supplies, Vehicle, Professional Fees, Insurance, Travel."
+                    "Please reply with a valid category like Grocery, Chicken, Meals, Utilities."
                 )
                 return str(response)
-
 
             pending_entry["category"] = category
             pending_entry["folder"] = category
@@ -561,142 +678,66 @@ def whatsapp():
 
             clear_pending_category(uploader_phone)
 
-            send_whatsapp_message(
-                raw_from,
+            response.message(
                 f"Saved bill ✅\n"
                 f"Vendor: {pending_entry.get('vendor', '')}\n"
                 f"Total: ₹{pending_entry.get('total', '')}\n"
                 f"Category saved as: {category}"
             )
-
             return str(response)
 
-        
+        # Case 2: user sends new text expense
+        if intent == "expense_entry":
+            success, message = save_text_expense(intent_data, owner_phone, uploader_phone)
 
-        parsed_text = parse_comma_text_expense(incoming_msg)
+            if pending_entry:
+                message += (
+                    f"\n\nNote: You still have one earlier bill waiting for category confirmation.\n"
+                    f"Vendor: {pending_entry.get('vendor', '')}\n"
+                    f"Total: ₹{pending_entry.get('total', '')}\n"
+                    f"Reply only with category when you want to save it."
+                )
 
-        if parsed_text is None:
-            parsed_text = parse_free_text_expense_with_ai(incoming_msg)
+            response.message(message)
+            return str(response)
 
-        if parsed_text is None:
+        # Case 3: user asks finance question
+        if intent == "finance_question":
             response.message(
-                response.message(
-                    "I couldn't understand this expense.\n\n"
-                    "You can type naturally, for example:\n"
-                    "Paid 500 to Walmart for chicken today\n"
-                    "Bought milk from Devapaul for 1200 yesterday\n"
-                    "Shell fuel 70 dollars\n\n"
-                    "Or upload a bill image."
-)
+                "I understood your finance question ✅\n\n"
+                "Question answering is coming next.\n"
+                "Soon you can ask:\n"
+                "• How much did I spend on chicken this month?\n"
+                "• Show expenses from June 1\n"
+                "• What are my top vendors?"
             )
             return str(response)
 
-        amount = parsed_text["amount"]
-        category = parsed_text["category"]
-        date_value = parsed_text["date"]
-        vendor = parsed_text["vendor"]
-        item = parsed_text["item"]
-
-        memory_category, memory_folder = apply_vendor_memory(owner_phone, vendor)
-
-        if memory_category:
-            category = memory_category
-
-        if not category:
-            entry = {
-                "date": date_value,
-                "transaction_type": "expense",
-                "vendor": vendor,
-                "user_phone": owner_phone,
-                "uploaded_by": uploader_phone,
-                "description": item,
-                "category": "Uncategorized",
-                "folder": "Uncategorized",
-                "subtotal": amount,
-                "tax": 0,
-                "total": amount,
-                "currency": "INR",
-                "confidence": "manual",
-                "reason": "WhatsApp text entry",
-                "image_path": "",
-                "source": "WhatsApp Text",
-                "duplicate_key": make_expense_duplicate_key(
-                    owner_phone,
-                    {
-                        "vendor": vendor,
-                        "date": date_value,
-                        "total": amount,
-                        "description": item,
-                    }
-                ),
-            }
-
-            save_pending_entry(uploader_phone, entry)
-
+        # Case 4: pending bill exists but user sent unclear text
+        if pending_entry:
             response.message(
-                f"I found a new vendor/text expense.\n\n"
-                f"Vendor: {vendor}\n"
-                f"Amount: ₹{amount}\n"
-                f"Date: {date_value}\n\n"
-                f"Which category should I save this under?"
+                "You have one bill waiting for category confirmation.\n\n"
+                f"Vendor: {pending_entry.get('vendor', '')}\n"
+                f"Total: ₹{pending_entry.get('total', '')}\n\n"
+                "Reply with category only, like:\n"
+                "Grocery, Chicken, Meals, Utilities\n\n"
+                "Or send a new expense like:\n"
+                "Costco vegetables 2000"
             )
             return str(response)
 
-        folder = memory_folder if memory_folder else category
-
-        entry = {
-            "date": date_value,
-            "transaction_type": "expense",
-            "vendor": vendor,
-            "user_phone": owner_phone,
-            "uploaded_by": uploader_phone,
-            "description": item,
-            "category": category,
-            "folder": folder,
-            "subtotal": amount,
-            "tax": 0,
-            "total": amount,
-            "currency": "INR",
-            "confidence": "manual",
-            "reason": "WhatsApp text entry",
-            "image_path": "",
-            "source": "WhatsApp Text",
-            "duplicate_key": make_expense_duplicate_key(
-                owner_phone,
-                {
-                    "vendor": vendor,
-                    "date": date_value,
-                    "total": amount,
-                    "description": item,
-                }
-            ),
-        }
-
-        if is_duplicate_expense(entry["duplicate_key"]):
-            response.message("This text expense was already uploaded earlier.")
-            return str(response)
-
-        append_entry(entry)
-
-        update_vendor_memory(
-            user_phone=owner_phone,
-            vendor=vendor,
-            category=category,
-            folder=folder,
-        )
-
+        # Case 5: unknown message
         response.message(
-            f"Saved text expense ✅\n"
-            f"Vendor: {vendor}\n"
-            f"Amount: ₹{amount}\n"
-            f"Date: {date_value}\n"
-            f"Category: {category}"
+            "I couldn't understand that yet.\n\n"
+            "You can send:\n"
+            "• Costco vegetables 2000\n"
+            "• Spent 100 at Walmart for chicken today\n"
+            "• Grocery\n"
+            "• How much did I spend this month?\n\n"
+            "Or upload a bill image."
         )
-
         return str(response)
 
-    media_url = request.form.get("MediaUrl0")
-    media_type = request.form.get("MediaContentType0", "")
 
     print("Media URL:", media_url, flush=True)
     print("Media Type:", media_type, flush=True)
