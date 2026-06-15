@@ -371,6 +371,7 @@ def save_text_expense(intent_data, owner_phone, uploader_phone):
     category = intent_data.get("category") or "Uncategorized"
 
     matched_category = match_category(description)
+
     if category == "Uncategorized" and matched_category:
         category = matched_category
 
@@ -595,6 +596,83 @@ Rules:
     except Exception as e:
         print("TEXT CLASSIFY ERROR:", str(e), flush=True)
         return {"intent": "unknown"}
+    
+def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_msg):
+    lazy_init()
+
+    try:
+        pending_entry = get_pending_entry(uploader_phone)
+
+        quick_category = match_category(incoming_msg)
+
+        if pending_entry and quick_category and len(incoming_msg.split()) <= 3:
+            intent_data = {
+                "intent": "category_reply",
+                "category": quick_category,
+                "date": "",
+                "vendor": "",
+                "description": "",
+                "amount": None,
+                "currency": "INR",
+            }
+        else:
+            intent_data = classify_whatsapp_text(incoming_msg)
+
+        print("TEXT INTENT:", intent_data, flush=True)
+
+        intent = intent_data.get("intent", "unknown")
+
+        if pending_entry and intent == "category_reply":
+            category = match_category(intent_data.get("category") or incoming_msg)
+
+            pending_entry["category"] = category
+            pending_entry["folder"] = category
+
+            append_entry(pending_entry)
+
+            update_vendor_memory(
+                user_phone=owner_phone,
+                vendor=pending_entry.get("vendor", ""),
+                category=category,
+                folder=category,
+            )
+
+            clear_pending_category(uploader_phone)
+
+            send_whatsapp_message(
+                raw_from,
+                f"Saved bill ✅\n"
+                f"Vendor: {pending_entry.get('vendor', '')}\n"
+                f"Total: ₹{pending_entry.get('total', '')}\n"
+                f"Category saved as: {category}"
+            )
+            return
+
+        if intent == "expense_entry":
+            success, message = save_text_expense(intent_data, owner_phone, uploader_phone)
+            send_whatsapp_message(raw_from, message)
+            return
+
+        if intent == "finance_question":
+            send_whatsapp_message(
+                raw_from,
+                "I understood your finance question ✅\n\n"
+                "Finance question answering is coming next."
+            )
+            return
+
+        send_whatsapp_message(
+            raw_from,
+            "I couldn't understand that yet.\n\n"
+            "Try:\n"
+            "Costco vegetables 2000\n"
+            "Spent 100 at Walmart for chicken today\n"
+            "Grocery"
+        )
+
+    except Exception as e:
+        print("TEXT PROCESS ERROR:", str(e), flush=True)
+        send_whatsapp_message(raw_from, f"Could not process your message. Error: {str(e)}")
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
@@ -628,116 +706,15 @@ def whatsapp():
     media_type = request.form.get("MediaContentType0", "")
 
     if num_media == 0:
-        pending_entry = get_pending_entry(uploader_phone)
+        threading.Thread(
+            target=process_text_in_background,
+            args=(raw_from, owner_phone, uploader_phone, incoming_msg),
+            daemon=True
+        ).start()
 
-        print("Checking pending for:", uploader_phone, flush=True)
-        print("Has pending:", pending_entry is not None, flush=True)
-
-        quick_category = match_category(incoming_msg)
-
-        if pending_entry and quick_category and len(incoming_msg.split()) <= 3:
-            intent_data = {
-                "intent": "category_reply",
-                "category": quick_category,
-                "date": "",
-                "vendor": "",
-                "description": "",
-                "amount": None,
-                "currency": "INR",
-            }
-        else:
-            intent_data = classify_whatsapp_text(incoming_msg)
-        intent = intent_data.get("intent", "unknown")
-
-        print("TEXT INTENT:", intent_data, flush=True)
-
-        # Case 1: user is replying category for pending bill
-        if pending_entry and intent == "category_reply":
-            category = match_category(intent_data.get("category") or incoming_msg)
-
-            if not category:
-                response.message(
-                    "Please reply with a valid category like Grocery, Chicken, Meals, Utilities."
-                )
-                return str(response)
-
-            pending_entry["category"] = category
-            pending_entry["folder"] = category
-
-            print("Saving pending entry:", pending_entry, flush=True)
-
-            save_start = time.time()
-            append_entry(pending_entry)
-            print("CONFIRMED ENTRY SAVE:", round(time.time() - save_start, 2), "sec", flush=True)
-
-            update_vendor_memory(
-                user_phone=owner_phone,
-                vendor=pending_entry.get("vendor", ""),
-                category=category,
-                folder=category,
-            )
-
-            clear_pending_category(uploader_phone)
-
-            response.message(
-                f"Saved bill ✅\n"
-                f"Vendor: {pending_entry.get('vendor', '')}\n"
-                f"Total: ₹{pending_entry.get('total', '')}\n"
-                f"Category saved as: {category}"
-            )
-            return str(response)
-
-        # Case 2: user sends new text expense
-        if intent == "expense_entry":
-            success, message = save_text_expense(intent_data, owner_phone, uploader_phone)
-
-            if pending_entry:
-                message += (
-                    f"\n\nNote: You still have one earlier bill waiting for category confirmation.\n"
-                    f"Vendor: {pending_entry.get('vendor', '')}\n"
-                    f"Total: ₹{pending_entry.get('total', '')}\n"
-                    f"Reply only with category when you want to save it."
-                )
-
-            response.message(message)
-            return str(response)
-
-        # Case 3: user asks finance question
-        if intent == "finance_question":
-            response.message(
-                "I understood your finance question ✅\n\n"
-                "Question answering is coming next.\n"
-                "Soon you can ask:\n"
-                "• How much did I spend on chicken this month?\n"
-                "• Show expenses from June 1\n"
-                "• What are my top vendors?"
-            )
-            return str(response)
-
-        # Case 4: pending bill exists but user sent unclear text
-        if pending_entry:
-            response.message(
-                "You have one bill waiting for category confirmation.\n\n"
-                f"Vendor: {pending_entry.get('vendor', '')}\n"
-                f"Total: ₹{pending_entry.get('total', '')}\n\n"
-                "Reply with category only, like:\n"
-                "Grocery, Chicken, Meals, Utilities\n\n"
-                "Or send a new expense like:\n"
-                "Costco vegetables 2000"
-            )
-            return str(response)
-
-        # Case 5: unknown message
-        response.message(
-            "I couldn't understand that yet.\n\n"
-            "You can send:\n"
-            "• Costco vegetables 2000\n"
-            "• Spent 100 at Walmart for chicken today\n"
-            "• Grocery\n"
-            "• How much did I spend this month?\n\n"
-            "Or upload a bill image."
-        )
+        response.message("Message received ✅\nProcessing now...")
         return str(response)
+
 
 
     print("Media URL:", media_url, flush=True)
