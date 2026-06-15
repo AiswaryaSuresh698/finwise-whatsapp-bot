@@ -16,6 +16,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 from dotenv import load_dotenv
 from PIL import Image
+from calendar import monthrange
 
 load_dotenv()
 
@@ -597,6 +598,408 @@ Rules:
         print("TEXT CLASSIFY ERROR:", str(e), flush=True)
         return {"intent": "unknown"}
     
+def extract_finance_question_intent(user_text, owner_phone):
+    today = datetime.now().date()
+
+    prompt = f"""
+You convert finance questions into safe structured JSON.
+
+Today is {today}.
+
+User question:
+{user_text}
+
+Return ONLY valid JSON:
+{{
+  "intent": "total_expense" | "category_expense" | "vendor_expense" | "top_vendors" | "top_categories" | "income_total" | "net_total" | "recent_expenses" | "unknown",
+  "category": "",
+  "vendor": "",
+  "start_date": "YYYY-MM-DD",
+  "end_date": "YYYY-MM-DD",
+  "limit": 5,
+  "confidence": 0.0,
+  "needs_clarification": false,
+  "clarification_question": ""
+}}
+
+Rules:
+- Never calculate money.
+- Never invent totals.
+- Correct spelling mistakes silently. Example: chichen = Chicken.
+- For "today", use today's date.
+- For "yesterday", use yesterday.
+- For "this month", use first day of current month to today.
+- For "last month", use full previous month.
+- For "3 months back", interpret as the full month 3 months ago.
+- If question is too unclear, set needs_clarification=true.
+- If no date is given, default to this month.
+"""
+
+    try:
+        result = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You only extract structured finance query intent. You never answer with money."
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+        )
+
+        return json.loads(result.choices[0].message.content.strip())
+
+    except Exception as e:
+        print("FINANCE INTENT ERROR:", str(e), flush=True)
+        return {
+            "intent": "unknown",
+            "needs_clarification": True,
+            "clarification_question": "Can you ask that another way? For example: How much did I spend on chicken this month?"
+        }
+
+
+def safe_float(value):
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
+def query_finance_answer(intent_data, owner_phone):
+    intent = intent_data.get("intent", "unknown")
+    category = str(intent_data.get("category") or "").strip()
+    vendor = str(intent_data.get("vendor") or "").strip()
+    start_date = intent_data.get("start_date")
+    end_date = intent_data.get("end_date")
+    limit = int(intent_data.get("limit") or 5)
+
+    if intent_data.get("needs_clarification"):
+        return {
+            "type": "clarification",
+            "message": intent_data.get("clarification_question") or "Can you clarify your question?"
+        }
+
+    if not start_date or not end_date:
+        return {
+            "type": "clarification",
+            "message": "Which period should I check? Today, this week, this month, or a custom date range?"
+        }
+
+    base_filter = """
+        user_phone = :owner_phone
+        AND COALESCE(is_deleted, '') != 'yes'
+        AND date::date BETWEEN :start_date AND :end_date
+    """
+
+    params = {
+        "owner_phone": str(owner_phone),
+        "start_date": start_date,
+        "end_date": end_date,
+        "limit": limit,
+    }
+
+    with engine.begin() as conn:
+
+        if intent in ["total_expense", "category_expense"]:
+            search_filter = ""
+
+            if intent == "category_expense" and category:
+                params["search"] = f"%{category}%"
+                search_filter = """
+                    AND (
+                        category ILIKE :search
+                        OR vendor ILIKE :search
+                        OR description ILIKE :search
+                    )
+                """
+
+            row = conn.execute(
+                text(f"""
+                    SELECT
+                        COUNT(*) AS count,
+                        COALESCE(SUM(total::numeric), 0) AS total
+                    FROM entries
+                    WHERE {base_filter}
+                    AND LOWER(COALESCE(transaction_type, 'expense')) = 'expense'
+                    {search_filter}
+                """),
+                params
+            ).fetchone()
+
+            return {
+                "type": "amount",
+                "intent": intent,
+                "category": category,
+                "vendor": vendor,
+                "start_date": start_date,
+                "end_date": end_date,
+                "count": int(row.count or 0),
+                "amount": safe_float(row.total),
+                "label": category if category else "expenses"
+            }
+
+        if intent == "vendor_expense":
+            if not vendor:
+                return {"type": "clarification", "message": "Which vendor should I check?"}
+
+            params["search"] = f"%{vendor}%"
+
+            row = conn.execute(
+                text(f"""
+                    SELECT
+                        COUNT(*) AS count,
+                        COALESCE(SUM(total::numeric), 0) AS total
+                    FROM entries
+                    WHERE {base_filter}
+                    AND LOWER(COALESCE(transaction_type, 'expense')) = 'expense'
+                    AND vendor ILIKE :search
+                """),
+                params
+            ).fetchone()
+
+            return {
+                "type": "amount",
+                "intent": intent,
+                "vendor": vendor,
+                "start_date": start_date,
+                "end_date": end_date,
+                "count": int(row.count or 0),
+                "amount": safe_float(row.total),
+                "label": vendor
+            }
+
+        if intent == "top_vendors":
+            rows = conn.execute(
+                text(f"""
+                    SELECT
+                        vendor,
+                        COUNT(*) AS count,
+                        COALESCE(SUM(total::numeric), 0) AS total
+                    FROM entries
+                    WHERE {base_filter}
+                    AND LOWER(COALESCE(transaction_type, 'expense')) = 'expense'
+                    GROUP BY vendor
+                    ORDER BY total DESC
+                    LIMIT :limit
+                """),
+                params
+            ).fetchall()
+
+            return {
+                "type": "ranking",
+                "title": "Top vendors",
+                "start_date": start_date,
+                "end_date": end_date,
+                "rows": [
+                    {
+                        "name": r.vendor or "Unknown Vendor",
+                        "count": int(r.count or 0),
+                        "amount": safe_float(r.total)
+                    }
+                    for r in rows
+                ]
+            }
+
+        if intent == "top_categories":
+            rows = conn.execute(
+                text(f"""
+                    SELECT
+                        category,
+                        COUNT(*) AS count,
+                        COALESCE(SUM(total::numeric), 0) AS total
+                    FROM entries
+                    WHERE {base_filter}
+                    AND LOWER(COALESCE(transaction_type, 'expense')) = 'expense'
+                    GROUP BY category
+                    ORDER BY total DESC
+                    LIMIT :limit
+                """),
+                params
+            ).fetchall()
+
+            return {
+                "type": "ranking",
+                "title": "Top categories",
+                "start_date": start_date,
+                "end_date": end_date,
+                "rows": [
+                    {
+                        "name": r.category or "Uncategorized",
+                        "count": int(r.count or 0),
+                        "amount": safe_float(r.total)
+                    }
+                    for r in rows
+                ]
+            }
+
+        if intent == "income_total":
+            entry_income = conn.execute(
+                text(f"""
+                    SELECT COALESCE(SUM(total::numeric), 0) AS total
+                    FROM entries
+                    WHERE {base_filter}
+                    AND LOWER(COALESCE(transaction_type, '')) = 'income'
+                """),
+                params
+            ).fetchone()
+
+            petpooja_income = conn.execute(
+                text("""
+                    SELECT COALESCE(SUM("Total"::numeric), 0) AS total
+                    FROM petpooja_entries
+                    WHERE user_phone = :owner_phone
+                    AND "Date"::date BETWEEN :start_date AND :end_date
+                """),
+                params
+            ).fetchone()
+
+            total_income = safe_float(entry_income.total) + safe_float(petpooja_income.total)
+
+            return {
+                "type": "amount",
+                "intent": intent,
+                "label": "income / sales",
+                "start_date": start_date,
+                "end_date": end_date,
+                "count": None,
+                "amount": total_income
+            }
+
+        if intent == "net_total":
+            expense = conn.execute(
+                text(f"""
+                    SELECT COALESCE(SUM(total::numeric), 0) AS total
+                    FROM entries
+                    WHERE {base_filter}
+                    AND LOWER(COALESCE(transaction_type, 'expense')) = 'expense'
+                """),
+                params
+            ).fetchone()
+
+            entry_income = conn.execute(
+                text(f"""
+                    SELECT COALESCE(SUM(total::numeric), 0) AS total
+                    FROM entries
+                    WHERE {base_filter}
+                    AND LOWER(COALESCE(transaction_type, '')) = 'income'
+                """),
+                params
+            ).fetchone()
+
+            petpooja_income = conn.execute(
+                text("""
+                    SELECT COALESCE(SUM("Total"::numeric), 0) AS total
+                    FROM petpooja_entries
+                    WHERE user_phone = :owner_phone
+                    AND "Date"::date BETWEEN :start_date AND :end_date
+                """),
+                params
+            ).fetchone()
+
+            total_income = safe_float(entry_income.total) + safe_float(petpooja_income.total)
+            total_expense = safe_float(expense.total)
+
+            return {
+                "type": "net",
+                "start_date": start_date,
+                "end_date": end_date,
+                "income": total_income,
+                "expense": total_expense,
+                "net": total_income - total_expense
+            }
+
+        if intent == "recent_expenses":
+            rows = conn.execute(
+                text(f"""
+                    SELECT date, vendor, category, description, total
+                    FROM entries
+                    WHERE {base_filter}
+                    AND LOWER(COALESCE(transaction_type, 'expense')) = 'expense'
+                    ORDER BY date::date DESC, id DESC
+                    LIMIT :limit
+                """),
+                params
+            ).fetchall()
+
+            return {
+                "type": "recent",
+                "start_date": start_date,
+                "end_date": end_date,
+                "rows": [
+                    {
+                        "date": str(r.date),
+                        "vendor": r.vendor or "Unknown Vendor",
+                        "category": r.category or "Uncategorized",
+                        "description": r.description or "",
+                        "amount": safe_float(r.total)
+                    }
+                    for r in rows
+                ]
+            }
+
+    return {
+        "type": "clarification",
+        "message": "I can answer spending, income, vendor, category, net, and recent expense questions. Can you ask it another way?"
+    }
+
+
+def format_finance_answer(user_question, result):
+    if result["type"] == "clarification":
+        return result["message"]
+
+    if result["type"] == "amount":
+        if result.get("count") == 0:
+            return f"I couldn't find any {result.get('label', 'records')} from {result['start_date']} to {result['end_date']}."
+
+        return (
+            f"You spent ₹{result['amount']:,.2f} on {result.get('label', 'expenses')} "
+            f"from {result['start_date']} to {result['end_date']}."
+            if result.get("intent") != "income_total"
+            else
+            f"Your income/sales total is ₹{result['amount']:,.2f} "
+            f"from {result['start_date']} to {result['end_date']}."
+        )
+
+    if result["type"] == "ranking":
+        rows = result.get("rows", [])
+
+        if not rows:
+            return f"I couldn't find records for {result['start_date']} to {result['end_date']}."
+
+        lines = [
+            f"{result['title']} from {result['start_date']} to {result['end_date']}:"
+        ]
+
+        for i, row in enumerate(rows, start=1):
+            lines.append(f"{i}. {row['name']} - ₹{row['amount']:,.2f} ({row['count']} bills)")
+
+        return "\n".join(lines)
+
+    if result["type"] == "net":
+        return (
+            f"Based on uploaded records from {result['start_date']} to {result['end_date']}:\n\n"
+            f"Income/Sales: ₹{result['income']:,.2f}\n"
+            f"Expenses: ₹{result['expense']:,.2f}\n"
+            f"Net: ₹{result['net']:,.2f}"
+        )
+
+    if result["type"] == "recent":
+        rows = result.get("rows", [])
+
+        if not rows:
+            return f"I couldn't find recent expenses for {result['start_date']} to {result['end_date']}."
+
+        lines = [f"Recent expenses from {result['start_date']} to {result['end_date']}:"]
+        for row in rows:
+            lines.append(
+                f"- {row['date']} | {row['vendor']} | {row['category']} | ₹{row['amount']:,.2f}"
+            )
+
+        return "\n".join(lines)
+
+    return "I couldn't answer that yet. Try asking: How much did I spend this month?"
+    
 def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_msg):
     lazy_init()
 
@@ -654,11 +1057,15 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
             return
 
         if intent == "finance_question":
-            send_whatsapp_message(
-                raw_from,
-                "I understood your finance question ✅\n\n"
-                "Finance question answering is coming next."
-            )
+            finance_intent = extract_finance_question_intent(incoming_msg, owner_phone)
+            print("FINANCE INTENT:", finance_intent, flush=True)
+
+            finance_result = query_finance_answer(finance_intent, owner_phone)
+            print("FINANCE RESULT:", finance_result, flush=True)
+
+            answer = format_finance_answer(incoming_msg, finance_result)
+
+            send_whatsapp_message(raw_from, answer)
             return
 
         send_whatsapp_message(
