@@ -248,6 +248,78 @@ def parse_comma_text_expense(text):
         "category": match_category(item) or "Uncategorized"
     }
 
+def parse_free_text_expense_with_ai(user_text):
+    """
+    Extract expense details from any natural WhatsApp text.
+    Examples:
+    - "paid 500 to walmart for chicken yesterday"
+    - "today milk 1200 from devapaul"
+    - "bought rice from metro for 800"
+    """
+
+    prompt = f"""
+Extract expense details from this WhatsApp message.
+
+Message:
+{user_text}
+
+Return ONLY valid JSON with this structure:
+{{
+  "is_expense": true/false,
+  "date": "YYYY-MM-DD",
+  "vendor": "vendor name or Manual Entry",
+  "description": "short description",
+  "category": "one of: Grocery, Gas, Internet, Utilities, Meals, Rent, Salary, Software, Office Supplies, Vehicle, Professional Fees, Insurance, Travel, Income, Milk, Chicken, Rice, Frozen Foods, Ice Cream, Cylinder, Marketing, Uncategorized",
+  "amount": number,
+  "currency": "INR"
+}}
+
+Rules:
+- If amount is missing, set is_expense=false.
+- If date is missing, use today's date: {datetime.now().strftime("%Y-%m-%d")}.
+- If vendor is unclear, use "Manual Entry".
+- If category is unclear, use "Uncategorized".
+- Do not include markdown.
+"""
+
+    try:
+        result = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You extract structured expense data from informal WhatsApp messages."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0
+        )
+
+        content = result.choices[0].message.content.strip()
+        data = json.loads(content)
+
+        if not data.get("is_expense"):
+            return None
+
+        amount = data.get("amount")
+        if amount is None:
+            return None
+
+        return {
+            "item": str(data.get("description", "Manual expense")).strip(),
+            "vendor": str(data.get("vendor", "Manual Entry")).strip().title(),
+            "amount": float(amount),
+            "date": str(data.get("date", datetime.now().strftime("%Y-%m-%d"))),
+            "category": str(data.get("category", "Uncategorized")).strip()
+        }
+
+    except Exception as e:
+        print("AI TEXT PARSE ERROR:", str(e), flush=True)
+        return None
+
 
 def extract_vendor(text, amount, category):
     vendor = str(text or "")
@@ -504,12 +576,18 @@ def whatsapp():
         parsed_text = parse_comma_text_expense(incoming_msg)
 
         if parsed_text is None:
+            parsed_text = parse_free_text_expense_with_ai(incoming_msg)
+
+        if parsed_text is None:
             response.message(
-                "Please enter your expense:\n\n"
-                "Item, vendor, amount, date of purchase\n\n"
-                "Example:\n"
-                "chicken, walmart, 1500, on June 2\n\n"
-                "Or upload a bill image."
+                response.message(
+                    "I couldn't understand this expense.\n\n"
+                    "You can type naturally, for example:\n"
+                    "Paid 500 to Walmart for chicken today\n"
+                    "Bought milk from Devapaul for 1200 yesterday\n"
+                    "Shell fuel 70 dollars\n\n"
+                    "Or upload a bill image."
+)
             )
             return str(response)
 
