@@ -367,11 +367,20 @@ def is_duplicate_expense(duplicate_key):
     return row is not None
 
 def save_text_expense(intent_data, owner_phone, uploader_phone):
+    description = intent_data.get("description") or "WhatsApp text expense"
     category = intent_data.get("category") or "Uncategorized"
+
+    matched_category = match_category(description)
+    if category == "Uncategorized" and matched_category:
+        category = matched_category
+
     vendor = intent_data.get("vendor") or "Manual Entry"
+
+    if vendor == "Manual Entry":
+        vendor = description
+
     amount = float(intent_data.get("amount") or 0)
     date_value = intent_data.get("date") or datetime.now().strftime("%Y-%m-%d")
-    description = intent_data.get("description") or "WhatsApp text expense"
 
     memory_category, memory_folder = apply_vendor_memory(owner_phone, vendor)
 
@@ -404,15 +413,7 @@ def save_text_expense(intent_data, owner_phone, uploader_phone):
     if is_duplicate_expense(entry["duplicate_key"]):
         return False, "This text expense was already uploaded earlier."
 
-    if category == "Uncategorized":
-        save_pending_entry(uploader_phone, entry)
-        return True, (
-            f"I understood this expense but need a category.\n\n"
-            f"Vendor: {vendor.title()}\n"
-            f"Amount: ₹{amount}\n"
-            f"Date: {date_value}\n\n"
-            f"Reply with category like Grocery, Chicken, Meals, Utilities."
-        )
+    
 
     append_entry(entry)
 
