@@ -598,7 +598,60 @@ Rules:
         print("TEXT CLASSIFY ERROR:", str(e), flush=True)
         return {"intent": "unknown"}
     
-def extract_finance_question_intent(user_text, owner_phone):
+def init_finance_context_table():
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS finance_context (
+                phone TEXT PRIMARY KEY,
+                context_json TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+
+
+def get_finance_context(phone):
+    init_finance_context_table()
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT context_json
+                FROM finance_context
+                WHERE phone = :phone
+                LIMIT 1
+            """),
+            {"phone": str(phone)}
+        ).fetchone()
+
+    if not row:
+        return {}
+
+    try:
+        return json.loads(row.context_json)
+    except Exception:
+        return {}
+
+
+def save_finance_context(phone, context):
+    init_finance_context_table()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO finance_context (phone, context_json)
+                VALUES (:phone, :context_json)
+                ON CONFLICT (phone)
+                DO UPDATE SET
+                    context_json = EXCLUDED.context_json,
+                    updated_at = CURRENT_TIMESTAMP
+            """),
+            {
+                "phone": str(phone),
+                "context_json": json.dumps(context)
+            }
+        )
+    
+def extract_finance_question_intent(user_text, owner_phone, previous_context=None):
     today = datetime.now().date()
 
     prompt = f"""
@@ -608,6 +661,9 @@ Today is {today}.
 
 User question:
 {user_text}
+
+Previous finance context:
+{json.dumps(previous_context or {}, default=str)}
 
 Return ONLY valid JSON:
 {{
@@ -625,14 +681,15 @@ Return ONLY valid JSON:
 Rules:
 - Never calculate money.
 - Never invent totals.
-- Correct spelling mistakes silently. Example: chichen = Chicken.
-- For "today", use today's date.
-- For "yesterday", use yesterday.
-- For "this month", use first day of current month to today.
-- For "last month", use full previous month.
-- For "3 months back", interpret as the full month 3 months ago.
+- Correct spelling mistakes silently.
+- If user gives a follow-up like "not this month", "entirely", "overall", "all time", reuse previous intent/category/vendor.
+- If user says "all time", "entirely", "overall", "from beginning", use start_date="1900-01-01" and end_date=today.
+- If user gives any time phrase, follow that phrase.
+- Only default to this month if no time period is mentioned at all.
+- If user says "May month", use full May of the current year.
+- If user says "this month", use first day of current month to today.
+- If user says "last month", use full previous month.
 - If question is too unclear, set needs_clarification=true.
-- If no date is given, default to this month.
 """
 
     try:
@@ -657,7 +714,6 @@ Rules:
             "needs_clarification": True,
             "clarification_question": "Can you ask that another way? For example: How much did I spend on chicken this month?"
         }
-
 
 def safe_float(value):
     try:
@@ -1056,12 +1112,21 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
             return
 
         if intent == "finance_question":
-            finance_intent = extract_finance_question_intent(incoming_msg, owner_phone)
+            previous_context = get_finance_context(uploader_phone)
+
+            finance_intent = extract_finance_question_intent(
+                incoming_msg,
+                owner_phone,
+                previous_context
+)
             print("FINANCE INTENT:", finance_intent, flush=True)
 
             finance_result = query_finance_answer(finance_intent, owner_phone)
             print("FINANCE RESULT:", finance_result, flush=True)
 
+            if not finance_intent.get("needs_clarification") and finance_intent.get("intent") != "unknown":
+                save_finance_context(uploader_phone, finance_intent)
+                
             answer = format_finance_answer(incoming_msg, finance_result)
 
             send_whatsapp_message(raw_from, answer)
