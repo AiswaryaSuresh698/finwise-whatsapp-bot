@@ -688,7 +688,6 @@ def query_finance_answer(intent_data, owner_phone):
 
     base_filter = """
         user_phone = :owner_phone
-        AND COALESCE(is_deleted, '') != 'yes'
         AND date::date BETWEEN :start_date AND :end_date
     """
 
