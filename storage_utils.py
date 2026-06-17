@@ -413,6 +413,19 @@ def load_entries_for_user(user_phone, limit=100):
         print(f"load_entries_for_user error: {e}")
         return pd.DataFrame()
 
+def load_entries_for_user(user_phone):
+    df = load_entries()
+
+    if df.empty:
+        return df
+
+    if "user_phone" not in df.columns:
+        df["user_phone"] = ""
+
+    phone_clean = clean_phone(user_phone)
+    df["user_phone_clean"] = df["user_phone"].astype(str).apply(clean_phone)
+
+    return df[df["user_phone_clean"] == phone_clean].copy()
 
 def load_entries():
     return read_sheet("entries")
