@@ -383,37 +383,7 @@ def list_folder_images(folder: str):
         if file.lower().endswith(valid_ext)
     ]
 
-def load_entries_for_user(user_phone, limit=100):
-    phone_clean = clean_phone(user_phone)
-
-    if engine is None:
-        return pd.DataFrame()
-
-    try:
-        init_db()
-
-        query = text("""
-            SELECT *
-            FROM entries
-            WHERE user_phone = :phone
-            ORDER BY id DESC
-            LIMIT :limit
-        """)
-
-        return pd.read_sql_query(
-            query,
-            engine,
-            params={
-                "phone": phone_clean,
-                "limit": int(limit),
-            },
-        )
-
-    except Exception as e:
-        print(f"load_entries_for_user error: {e}")
-        return pd.DataFrame()
-
-def load_entries_for_user(user_phone):
+def load_entries_for_user(user_phone, limit=500):
     df = load_entries()
 
     if df.empty:
@@ -425,7 +395,21 @@ def load_entries_for_user(user_phone):
     phone_clean = clean_phone(user_phone)
     df["user_phone_clean"] = df["user_phone"].astype(str).apply(clean_phone)
 
-    return df[df["user_phone_clean"] == phone_clean].copy()
+    df = df[df["user_phone_clean"] == phone_clean].copy()
+
+    if "is_deleted" in df.columns:
+        df = df[df["is_deleted"].astype(str).str.lower() != "yes"].copy()
+
+    if "date" in df.columns:
+        df["date_sort"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.sort_values("date_sort", ascending=False)
+        df = df.drop(columns=["date_sort"], errors="ignore")
+
+    if limit:
+        df = df.head(int(limit))
+
+    return df
+
 
 def load_entries():
     return read_sheet("entries")
