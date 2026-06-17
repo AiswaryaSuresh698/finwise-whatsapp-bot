@@ -381,7 +381,18 @@ def save_text_expense(intent_data, owner_phone, uploader_phone):
     if vendor == "Manual Entry":
         vendor = description
 
+    
+    # If vendor contains amount, clean it
+    vendor = re.sub(r"\d+(?:\.\d+)?", "", vendor).strip(" -,")
+
+    if not vendor:
+        vendor = "Manual Entry"
+
     amount = float(intent_data.get("amount") or 0)
+    if amount <= 0:
+        extracted_amount = extract_amount(description)
+        if extracted_amount:
+            amount = extracted_amount
     date_value = intent_data.get("date") or datetime.now().strftime("%Y-%m-%d")
 
     memory_category, memory_folder = apply_vendor_memory(owner_phone, vendor)
@@ -667,7 +678,7 @@ Previous finance context:
 
 Return ONLY valid JSON:
 {{
-  "intent": "total_expense" | "category_expense" | "vendor_expense" | "top_vendors" | "top_categories" | "income_total" | "net_total" | "recent_expenses" | "unknown",
+  "intent": "total_expense" | "category_expense" | "vendor_expense" | "top_vendors" | "top_categories" | "income_total" | "net_total" | "recent_expenses" | "search_transactions" | "unknown",
   "category": "",
   "vendor": "",
   "start_date": "YYYY-MM-DD",
@@ -690,6 +701,11 @@ Rules:
 - If user says "this month", use first day of current month to today.
 - If user says "last month", use full previous month.
 - If question is too unclear, set needs_clarification=true.
+- If user asks "do I have", "is there any bill", "any vendor bill called", "show bills", use intent="search_transactions".
+- If user says "uncategorized bill", use intent="search_transactions" and category="Uncategorized".
+- If user says "how about X", reuse previous intent/date range and set vendor or category to X.
+- For known category names like Grocery, Chicken, Gas, Milk, Rice, use category.
+- For business/vendor names like Devapaul, Durain Vegetables, Walmart, Costco, use vendor.
 """
 
     try:
@@ -992,6 +1008,80 @@ def query_finance_answer(intent_data, owner_phone):
                     for r in rows
                 ]
             }
+        if intent == "search_transactions":
+                search_conditions = []
+                
+                if category:
+                    params["category_search"] = f"%{category}%"
+                    search_conditions.append("""
+                        (
+                            category ILIKE :category_search
+                            OR description ILIKE :category_search
+                        )
+                    """)
+
+                if vendor:
+                    params["vendor_search"] = f"%{vendor}%"
+                    search_conditions.append("""
+                        (
+                            vendor ILIKE :vendor_search
+                            OR description ILIKE :vendor_search
+                        )
+                    """)
+
+                if not search_conditions:
+                    return {
+                        "type": "clarification",
+                        "message": "What bill/vendor/category should I search for?"
+                    }
+
+                search_filter = " AND (" + " OR ".join(search_conditions) + ")"
+
+                rows = conn.execute(
+                    text(f"""
+                        SELECT date, vendor, category, description, total
+                        FROM entries
+                        WHERE {base_filter}
+                        AND LOWER(COALESCE(transaction_type, 'expense')) = 'expense'
+                        {search_filter}
+                        ORDER BY date::date DESC, id DESC
+                        LIMIT :limit
+                    """),
+                    params
+                ).fetchall()
+
+                total_row = conn.execute(
+                    text(f"""
+                        SELECT
+                            COUNT(*) AS count,
+                            COALESCE(SUM(total::numeric), 0) AS total
+                        FROM entries
+                        WHERE {base_filter}
+                        AND LOWER(COALESCE(transaction_type, 'expense')) = 'expense'
+                        {search_filter}
+                    """),
+                    params
+                ).fetchone()
+
+                return {
+                    "type": "search",
+                    "category": category,
+                    "vendor": vendor,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "count": int(total_row.count or 0),
+                    "amount": safe_float(total_row.total),
+                    "rows": [
+                        {
+                            "date": str(r.date),
+                            "vendor": r.vendor or "Unknown Vendor",
+                            "category": r.category or "Uncategorized",
+                            "description": r.description or "",
+                            "amount": safe_float(r.total)
+                        }
+                        for r in rows
+                    ]
+                }
 
     return {
         "type": "clarification",
@@ -1007,6 +1097,13 @@ def format_finance_answer(user_question, result):
         if result.get("count") == 0:
             return f"I couldn't find any {result.get('label', 'records')} from {result['start_date']} to {result['end_date']}."
 
+        if result.get("count") and result.get("amount") == 0:
+            return (
+                f"I found {result.get('count')} {result.get('label', 'record(s)')} "
+                f"from {result['start_date']} to {result['end_date']}, "
+                f"but the saved amount is ₹0.00. Please check if the bill amount was captured correctly."
+            )
+
         return (
             f"You spent ₹{result['amount']:,.2f} on {result.get('label', 'expenses')} "
             f"from {result['start_date']} to {result['end_date']}."
@@ -1015,7 +1112,8 @@ def format_finance_answer(user_question, result):
             f"Your income/sales total is ₹{result['amount']:,.2f} "
             f"from {result['start_date']} to {result['end_date']}."
         )
-
+        
+        
     if result["type"] == "ranking":
         rows = result.get("rows", [])
 
@@ -1052,6 +1150,27 @@ def format_finance_answer(user_question, result):
             )
 
         return "\n".join(lines)
+    
+    if result["type"] == "search":
+            rows = result.get("rows", [])
+            label = result.get("vendor") or result.get("category") or "matching bills"
+
+            if not rows:
+                return f"I couldn't find any {label} from {result['start_date']} to {result['end_date']}."
+
+            lines = [
+                f"I found {result['count']} {label} bill(s) from {result['start_date']} to {result['end_date']}.",
+                f"Total: ₹{result['amount']:,.2f}",
+                "",
+                "Latest records:"
+            ]
+
+            for row in rows[:5]:
+                lines.append(
+                    f"- {row['date']} | {row['vendor']} | {row['category']} | ₹{row['amount']:,.2f}"
+                )
+
+            return "\n".join(lines)
 
     return "I couldn't answer that yet. Try asking: How much did I spend this month?"
     
@@ -1126,7 +1245,7 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
 
             if not finance_intent.get("needs_clarification") and finance_intent.get("intent") != "unknown":
                 save_finance_context(uploader_phone, finance_intent)
-                
+
             answer = format_finance_answer(incoming_msg, finance_result)
 
             send_whatsapp_message(raw_from, answer)
