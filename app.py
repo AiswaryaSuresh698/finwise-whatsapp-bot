@@ -24,6 +24,7 @@ from storage_utils import (
     clean_phone,
     get_presigned_s3_url,
     append_petpooja_entry,
+    append_entry,
     init_db,
 )
 
@@ -1100,6 +1101,81 @@ if screen == "📊 Dashboard":
     with m3:
         metric_card("Net", net_amount, "💼", "#DBEAFE", "#2563EB")
 
+    st.write("### ➕ Add Manual Expense")
+
+    with st.expander("Add expense manually", expanded=False):
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            manual_date = st.date_input("Date", value=date.today(), key="manual_expense_date")
+            manual_vendor = st.text_input("Vendor", placeholder="Example: Walmart", key="manual_expense_vendor")
+
+        with c2:
+            manual_category = st.selectbox(
+                "Category",
+                [
+                    "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent", "Salary",
+                    "Software", "Office Supplies", "Vehicle", "Professional Fees",
+                    "Insurance", "Travel", "Income", "Uncategorized",
+                    "Milk", "Chicken", "Rice", "Brownie", "Butter",
+                    "Soap Oil", "Cylinder", "Frozen", "Ice Cream",
+                    "Parotta", "Marketing"
+                ],
+                key="manual_expense_category"
+            )
+            manual_amount = st.number_input(
+                "Amount",
+                min_value=0.0,
+                step=1.0,
+                format="%.2f",
+                key="manual_expense_amount"
+            )
+
+        with c3:
+            manual_type = st.selectbox("Type", ["expense", "income"], key="manual_expense_type")
+            manual_description = st.text_input(
+                "Description",
+                placeholder="Example: milk purchase",
+                key="manual_expense_description"
+            )
+
+        if st.button("➕ Add Expense", type="primary", use_container_width=True, key="add_manual_expense_btn"):
+            if not manual_vendor.strip():
+                st.error("Please enter vendor.")
+            elif manual_amount <= 0:
+                st.error("Please enter amount greater than 0.")
+            else:
+                manual_entry = {
+                    "date": str(manual_date),
+                    "transaction_type": manual_type,
+                    "vendor": manual_vendor.strip().title(),
+                    "user_phone": clean_phone(phone),
+                    "uploaded_by": clean_phone(phone),
+                    "description": manual_description.strip() or manual_vendor.strip(),
+                    "category": manual_category,
+                    "folder": manual_category,
+                    "subtotal": float(manual_amount),
+                    "tax": 0,
+                    "total": float(manual_amount),
+                    "currency": "INR",
+                    "confidence": "manual",
+                    "reason": "Manual dashboard entry",
+                    "image_path": "",
+                    "source": "Manual Dashboard",
+                }
+
+                append_entry(manual_entry)
+
+                update_vendor_memory(
+                    user_phone=phone,
+                    vendor=manual_vendor.strip().title(),
+                    category=manual_category,
+                    folder=manual_category,
+                )
+
+                st.success("Manual expense added successfully.")
+                st.cache_data.clear()
+                st.rerun()
 
     st.write("### Expenses from WhatsApp")
 
