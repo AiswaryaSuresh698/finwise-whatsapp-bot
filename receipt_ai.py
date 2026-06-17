@@ -3,6 +3,7 @@ import json
 from io import BytesIO
 from PIL import Image
 from openai import OpenAI
+import time
 
 
 CATEGORY_OPTIONS = [
@@ -28,13 +29,30 @@ def get_client(api_key: str):
 
 
 def image_to_base64(image: Image.Image) -> str:
+
+    image = image.convert("RGB")
+
+    # Resize large phone images
+    image.thumbnail((1200, 1200))
+
     buffer = BytesIO()
-    image.save(buffer, format="PNG")
+
+    # JPEG is much smaller than PNG
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=75,
+        optimize=True
+    )
+
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
 def extract_bill_details(client, image: Image.Image, model: str = "gpt-4.1-mini") -> dict:
     image_b64 = image_to_base64(image)
+
+    image_size_mb = len(base64.b64decode(image_b64)) / (1024 * 1024)
+    print(f"IMAGE SIZE SENT TO OPENAI: {image_size_mb:.2f} MB")
 
     prompt = """
 Analyze this bill, receipt, invoice, or payment document.
@@ -103,6 +121,8 @@ Rules:
         "strict": True,
     }
 
+    start = time.time()
+
     response = client.chat.completions.create(
         model=model,
         temperature=0,
@@ -127,6 +147,8 @@ Rules:
             },
         ],
     )
+
+    print(f"OPENAI EXTRACTION: {time.time() - start:.2f}s")
 
     data = json.loads(response.choices[0].message.content)
 

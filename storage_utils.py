@@ -383,6 +383,36 @@ def list_folder_images(folder: str):
         if file.lower().endswith(valid_ext)
     ]
 
+def load_entries_for_user(user_phone, limit=100):
+    phone_clean = clean_phone(user_phone)
+
+    if engine is None:
+        return pd.DataFrame()
+
+    try:
+        init_db()
+
+        query = text("""
+            SELECT *
+            FROM entries
+            WHERE user_phone = :phone
+            ORDER BY id DESC
+            LIMIT :limit
+        """)
+
+        return pd.read_sql_query(
+            query,
+            engine,
+            params={
+                "phone": phone_clean,
+                "limit": int(limit),
+            },
+        )
+
+    except Exception as e:
+        print(f"load_entries_for_user error: {e}")
+        return pd.DataFrame()
+
 
 def load_entries():
     return read_sheet("entries")

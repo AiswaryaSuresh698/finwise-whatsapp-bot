@@ -26,6 +26,7 @@ from storage_utils import (
     append_petpooja_entry,
     append_entry,
     init_db,
+    load_entries_for_user,
 )
 
 load_dotenv()
@@ -55,6 +56,9 @@ initialize_database()
 def cached_load_entries():
     return load_entries()
 
+@st.cache_data(ttl=30)
+def cached_load_entries_for_user(phone, limit=500):
+    return load_entries_for_user(phone, limit)
 
 @st.cache_data(ttl=30)
 def cached_load_petpooja_entries():
@@ -1051,8 +1055,7 @@ if screen == "📊 Dashboard":
     
 
     # WhatsApp entries
-    df = cached_load_entries()
-    df = filter_by_phone(df, phone)
+    df = cached_load_entries_for_user(phone, limit=500)
     if not df.empty and "is_deleted" in df.columns:
         df = df[df["is_deleted"].astype(str).str.lower() != "yes"].copy()
 
@@ -1502,8 +1505,7 @@ elif screen == "📁 Folder View":
     st.subheader("📁 File Explorer")
 
     
-    df = cached_load_entries()
-    df = filter_by_phone(df, phone)
+    df = cached_load_entries_for_user(phone, limit=1000)
 
     if not df.empty and "is_deleted" in df.columns:
         df = df[df["is_deleted"].astype(str).str.lower() != "yes"].copy()
