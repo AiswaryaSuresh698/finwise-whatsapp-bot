@@ -706,6 +706,9 @@ Rules:
 - If user says "how about X", reuse previous intent/date range and set vendor or category to X.
 - For known category names like Grocery, Chicken, Gas, Milk, Rice, use category.
 - For business/vendor names like Devapaul, Durain Vegetables, Walmart, Costco, use vendor.
+- If user asks profit, net, balance, income minus expenses, use intent="net_total".
+- If user asks income, sales, revenue, Petpooja sales, use intent="income_total".
+- If user asks "what is my profit", still use intent="net_total".
 """
 
     try:
@@ -736,6 +739,48 @@ def safe_float(value):
         return float(value or 0)
     except Exception:
         return 0.0
+
+def get_petpooja_sales_total(conn, owner_phone, start_date, end_date):
+    cols = conn.execute(text("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'petpooja_entries'
+    """)).fetchall()
+
+    col_names = [c.column_name for c in cols]
+
+    amount_candidates = [
+        "total", "Total", "amount", "Amount", "sales", "Sales",
+        "net_sales", "Net Sales", "grand_total", "Grand Total"
+    ]
+
+    date_candidates = [
+        "date", "Date", "business_date", "Business Date",
+        "sale_date", "Sale Date"
+    ]
+
+    amount_col = next((c for c in amount_candidates if c in col_names), None)
+    date_col = next((c for c in date_candidates if c in col_names), None)
+
+    if not amount_col or not date_col:
+        print("PETPOOJA COLUMN MISSING:", col_names, flush=True)
+        return 0.0
+
+    row = conn.execute(
+        text(f"""
+            SELECT COALESCE(SUM("{amount_col}"::numeric), 0) AS total
+            FROM petpooja_entries
+            WHERE user_phone = :owner_phone
+            AND "{date_col}"::date BETWEEN :start_date AND :end_date
+        """),
+        {
+            "owner_phone": str(owner_phone),
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+    ).fetchone()
+
+    return safe_float(row.total)
 
 
 def query_finance_answer(intent_data, owner_phone):
@@ -915,17 +960,11 @@ def query_finance_answer(intent_data, owner_phone):
                 params
             ).fetchone()
 
-            petpooja_income = conn.execute(
-                text("""
-                    SELECT COALESCE(SUM("Total"::numeric), 0) AS total
-                    FROM petpooja_entries
-                    WHERE user_phone = :owner_phone
-                    AND "Date"::date BETWEEN :start_date AND :end_date
-                """),
-                params
-            ).fetchone()
+            petpooja_income = get_petpooja_sales_total(
+                conn, owner_phone, start_date, end_date
+            )
 
-            total_income = safe_float(entry_income.total) + safe_float(petpooja_income.total)
+            total_income = safe_float(entry_income.total) + petpooja_income
 
             return {
                 "type": "amount",
@@ -958,17 +997,11 @@ def query_finance_answer(intent_data, owner_phone):
                 params
             ).fetchone()
 
-            petpooja_income = conn.execute(
-                text("""
-                    SELECT COALESCE(SUM("Total"::numeric), 0) AS total
-                    FROM petpooja_entries
-                    WHERE user_phone = :owner_phone
-                    AND "Date"::date BETWEEN :start_date AND :end_date
-                """),
-                params
-            ).fetchone()
+            petpooja_income = get_petpooja_sales_total(
+                conn, owner_phone, start_date, end_date
+            )
 
-            total_income = safe_float(entry_income.total) + safe_float(petpooja_income.total)
+            total_income = safe_float(entry_income.total) + petpooja_income
             total_expense = safe_float(expense.total)
 
             return {
@@ -1134,7 +1167,7 @@ def format_finance_answer(user_question, result):
             f"Based on uploaded records from {result['start_date']} to {result['end_date']}:\n\n"
             f"Income/Sales: ₹{result['income']:,.2f}\n"
             f"Expenses: ₹{result['expense']:,.2f}\n"
-            f"Net: ₹{result['net']:,.2f}"
+            f"Net based on uploaded records: ₹{result['net']:,.2f}"
         )
 
     if result["type"] == "recent":
