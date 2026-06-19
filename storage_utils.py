@@ -7,6 +7,7 @@ from datetime import datetime
 import boto3
 import pandas as pd
 from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import text
 
 
 BASE_DIR = "finwise_storage"
@@ -59,6 +60,52 @@ def get_s3_client():
 
 s3 = get_s3_client()
 
+
+def update_entry_by_id(entry_id, category=None, amount=None, vendor=None):
+    updates = []
+    params = {"id": str(entry_id)}
+
+    if category is not None:
+        updates.append("category = :category")
+        updates.append("folder = :category")
+        params["category"] = str(category)
+
+    if amount is not None:
+        updates.append("total = :amount")
+        updates.append("subtotal = :amount")
+        params["amount"] = str(amount)
+
+    if vendor is not None:
+        updates.append("vendor = :vendor")
+        params["vendor"] = str(vendor)
+
+    if not updates:
+        return 0
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(f"""
+                UPDATE entries
+                SET {", ".join(updates)}
+                WHERE id = :id
+            """),
+            params
+        )
+
+    return result.rowcount
+
+
+def delete_entry_by_id(entry_id):
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                DELETE FROM entries
+                WHERE id = :id
+            """),
+            {"id": str(entry_id)}
+        )
+
+    return result.rowcount
 
 def _table_name(tab_name: str) -> str:
     name = str(tab_name or "").strip().lower()

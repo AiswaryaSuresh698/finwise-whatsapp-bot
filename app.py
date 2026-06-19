@@ -27,6 +27,8 @@ from storage_utils import (
     append_entry,
     init_db,
     load_entries_for_user,
+    update_entry_by_id,
+    delete_entry_by_id,
 )
 
 load_dotenv()
@@ -1188,7 +1190,7 @@ if screen == "📊 Dashboard":
         original_df = df.reset_index(drop=True).copy()
 
         display_df = pd.DataFrame()
-
+        display_df["db_id"] = original_df.get("id", "").astype(str)
         display_df["Expense Number"] = [
             f"EXP-{i:05d}" for i in range(1, len(original_df) + 1)
         ]
@@ -1239,7 +1241,7 @@ if screen == "📊 Dashboard":
                         default=False,
                     ),
                 },
-                disabled=["Expense Number", "Date", "Type", "Vendor", "Description"],
+                disabled=["Expense Number", "Type", "Description"],
             )
 
         with st.container(key="mobile_expense_editor"):
@@ -1296,48 +1298,36 @@ if screen == "📊 Dashboard":
             edited_df_mobile = pd.DataFrame(mobile_rows)
 
         def save_edited_expenses(edited_data, original_df, phone):
-            all_entries_df = load_entries()
+            for _, row in edited_data.iterrows():
+                entry_id = str(row.get("db_id", "")).strip()
 
-            for i, row in edited_data.iterrows():
+                if not entry_id:
+                    continue
+
                 new_category = str(row.get("Category", "")).strip()
+                new_vendor = str(row.get("Vendor", "")).strip()
                 new_amount = pd.to_numeric(row.get("Amount", 0), errors="coerce")
 
                 if pd.isna(new_amount):
                     new_amount = 0
 
-                if not new_category:
-                    continue
-
-                original_row = original_df.iloc[i]
-                original_id = original_row.get("id", None)
-                vendor = original_row.get("vendor", "")
-
-                if original_id is not None and "id" in all_entries_df.columns:
-                    mask = all_entries_df["id"].astype(str) == str(original_id)
-                else:
-                    mask = (
-                        (all_entries_df["user_phone"].astype(str).apply(clean_phone) == clean_phone(phone)) &
-                        (all_entries_df["vendor"].astype(str) == str(vendor)) &
-                        (all_entries_df["date"].astype(str) == str(original_row.get("date", ""))) &
-                        (all_entries_df["total"].astype(str) == str(original_row.get("total", "")))
-                    )
-
-                all_entries_df.loc[mask, "category"] = new_category
-                all_entries_df.loc[mask, "folder"] = new_category
-                all_entries_df.loc[mask, "total"] = float(new_amount)
-
-                update_vendor_memory(
-                    user_phone=phone,
-                    vendor=vendor,
+                update_entry_by_id(
+                    entry_id=entry_id,
                     category=new_category,
-                    folder=new_category,
+                    amount=float(new_amount),
+                    vendor=new_vendor,
                 )
 
-            save_entries(all_entries_df)
+                if new_vendor and new_category:
+                    update_vendor_memory(
+                        user_phone=phone,
+                        vendor=new_vendor,
+                        category=new_category,
+                        folder=new_category,
+                    )
 
 
         def delete_selected_expenses(edited_data, original_df, phone):
-            all_entries_df = load_entries()
             selected_rows = edited_data[edited_data["Delete?"] == True]
 
             if selected_rows.empty:
@@ -1345,27 +1335,12 @@ if screen == "📊 Dashboard":
 
             deleted_count = 0
 
-            for i, row in selected_rows.iterrows():
-                original_row = original_df.iloc[i]
-                original_id = original_row.get("id", None)
-                vendor = original_row.get("vendor", "")
-                date_value = original_row.get("date", "")
-                total_value = original_row.get("total", "")
+            for _, row in selected_rows.iterrows():
+                entry_id = str(row.get("db_id", "")).strip()
 
-                if original_id is not None and "id" in all_entries_df.columns:
-                    mask = all_entries_df["id"].astype(str) == str(original_id)
-                else:
-                    mask = (
-                        (all_entries_df["user_phone"].astype(str).apply(clean_phone) == clean_phone(phone)) &
-                        (all_entries_df["vendor"].astype(str) == str(vendor)) &
-                        (all_entries_df["date"].astype(str) == str(date_value)) &
-                        (all_entries_df["total"].astype(str) == str(total_value))
-                    )
+                if entry_id:
+                    deleted_count += delete_entry_by_id(entry_id)
 
-                all_entries_df.loc[mask, "is_deleted"] = "yes"
-                deleted_count += int(mask.sum())
-
-            save_entries(all_entries_df)
             return deleted_count
         
         with st.container(key="desktop_expense_buttons"):
