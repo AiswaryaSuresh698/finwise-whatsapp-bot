@@ -1120,7 +1120,7 @@ if screen == "📊 Dashboard":
                     "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent", "Salary",
                     "Software", "Office Supplies", "Vehicle", "Professional Fees",
                     "Insurance", "Travel", "Income", "Uncategorized",
-                    "Milk", "Chicken", "Rice", "Brownie", "Butter",
+                    "Milk", "Chicken", "Rice", "Brownie", "Butter", "Egg"
                     "Soap Oil", "Cylinder", "Frozen", "Ice Cream",
                     "Parotta", "Marketing"
                 ],
@@ -1208,7 +1208,7 @@ if screen == "📊 Dashboard":
             "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent", "Salary",
             "Software", "Office Supplies", "Vehicle", "Professional Fees",
             "Insurance", "Travel", "Income", "Uncategorized",
-            "Milk", "Chicken", "Rice", "Brownie", "Butter",
+            "Milk", "Chicken", "Rice", "Brownie", "Butter", "Egg",
             "Soap Oil", "Cylinder", "Frozen", "Ice Cream",
             "Parotta", "Marketing"
         ]

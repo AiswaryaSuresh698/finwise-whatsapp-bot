@@ -15,7 +15,7 @@ DEFAULT_FOLDERS = [
     "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent",
     "Software", "Salary", "Office Supplies", "Vehicle",
     "Professional Fees", "Insurance", "Travel", "Income",
-    "Uncategorized", "Milk", "Chicken", "Rice", "Brownie",
+    "Uncategorized", "Milk", "Chicken", "Rice", "Brownie", "Egg",
     "Butter", "Soap Oil", "Cylinder", "Frozen", "Ice Cream",
     "Parotta", "Marketing",
 ]
