@@ -10,6 +10,7 @@ import pandas as pd
 from io import BytesIO
 from datetime import datetime, timedelta
 from difflib import get_close_matches
+from storage_utils import clean_phone, get_owner_phone_for_uploader
 
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
@@ -1306,24 +1307,23 @@ def whatsapp():
 
     raw_from = request.form.get("From", "")
     from_number = raw_from.replace("whatsapp:", "")
-    phone_key = clean_phone(from_number)
-    uploader_phone = phone_key
+    uploader_phone = clean_phone(from_number)
+
+    # If uploader is staff, this returns owner phone.
+    # If uploader is not staff, treat uploader as owner.
     owner_phone = get_owner_phone_for_uploader(uploader_phone)
 
     if owner_phone is None:
-        response.message(
-            "This WhatsApp number is not linked to any FinWise restaurant account. "
-            "Please ask the restaurant owner to add this number."
-        )
-        return str(response)
+        owner_phone = uploader_phone
+
     incoming_msg = request.form.get("Body", "").strip()
     num_media = int(request.form.get("NumMedia", "0") or 0)
 
     print("From:", raw_from, flush=True)
-    print("Clean From:", phone_key, flush=True)
+    print("Uploader Phone:", uploader_phone, flush=True)
+    print("Owner Phone:", owner_phone, flush=True)
     print("Body:", incoming_msg, flush=True)
     print("Media count:", num_media, flush=True)
-
 
     media_url = request.form.get("MediaUrl0")
     media_type = request.form.get("MediaContentType0", "")
@@ -1338,15 +1338,13 @@ def whatsapp():
         response.message("Message received ✅\nProcessing now...")
         return str(response)
 
-
+    if not media_url:
+        response.message("Please upload a bill image.")
+        return str(response)
 
     print("Media URL:", media_url, flush=True)
     print("Media Type:", media_type, flush=True)
 
-    if not media_url:
-        response.message("Please upload a bill image.")
-        return str(response)
-    
     threading.Thread(
         target=process_bill_in_background,
         args=(raw_from, owner_phone, uploader_phone, media_url, media_type),
@@ -1354,7 +1352,5 @@ def whatsapp():
     ).start()
 
     response.message("Bill received ✅\nProcessing now...")
-
     return str(response)
-
         
