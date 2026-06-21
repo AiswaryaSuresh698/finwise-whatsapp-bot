@@ -1617,7 +1617,7 @@ elif screen == "⚙️ Settings":
             owner_name = st.text_input(
                 "Owner Name",
                 value=profile.get("owner_name", ""),
-                placeholder="Example: Rohith",
+                placeholder="Example: Aiswarya",
                 key="settings_owner_name",
             )
 
