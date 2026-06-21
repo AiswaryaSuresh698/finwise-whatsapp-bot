@@ -243,6 +243,26 @@ def filter_by_phone(df, phone):
     df["user_phone_clean"] = df["user_phone"].astype(str).apply(clean_phone)
     return df[df["user_phone_clean"] == phone_clean].copy()
 
+def get_category_options_for_user(phone):
+    default_categories = list(DEFAULT_FOLDERS)
+
+    try:
+        user_cat_df = load_user_categories(phone)
+        custom_categories = (
+            user_cat_df["category_name"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .tolist()
+        )
+    except Exception:
+        custom_categories = []
+
+    combined = default_categories + custom_categories
+
+    # remove duplicates but keep order
+    return list(dict.fromkeys([c for c in combined if c]))
+
 
 def metric_card(label, value, icon, bg, color):
     st.markdown(
@@ -1132,16 +1152,10 @@ if screen == "📊 Dashboard":
         with c2:
             manual_category = st.selectbox(
                 "Category",
-                [
-                    "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent", "Salary",
-                    "Software", "Office Supplies", "Vehicle", "Professional Fees",
-                    "Insurance", "Travel", "Income", "Uncategorized",
-                    "Milk", "Chicken", "Rice", "Brownie", "Butter", "Egg"
-                    "Soap Oil", "Cylinder", "Frozen", "Ice Cream",
-                    "Parotta", "Marketing"
-                ],
+                get_category_options_for_user(phone),
                 key="manual_expense_category"
             )
+            
             manual_amount = st.number_input(
                 "Amount",
                 min_value=0.0,
@@ -1220,14 +1234,7 @@ if screen == "📊 Dashboard":
         ).fillna(0)
         display_df["Delete?"] = False
 
-        category_options = [
-            "Grocery", "Gas", "Internet", "Utilities", "Meals", "Rent", "Salary",
-            "Software", "Office Supplies", "Vehicle", "Professional Fees",
-            "Insurance", "Travel", "Income", "Uncategorized",
-            "Milk", "Chicken", "Rice", "Brownie", "Butter", "Egg",
-            "Soap Oil", "Cylinder", "Frozen", "Ice Cream",
-            "Parotta", "Marketing"
-        ]
+        category_options = get_category_options_for_user(phone)
 
         with st.container(key="desktop_expense_editor"):
             edited_df = st.data_editor(
