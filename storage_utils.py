@@ -702,6 +702,26 @@ def load_restaurant_uploaders():
 def save_restaurant_uploaders(df):
     write_sheet("restaurant_uploaders", df)
 
+from datetime import datetime
+import pandas as pd
+
+def normalize_date_ddmmyyyy(value):
+    value = str(value or "").strip()
+
+    if not value:
+        return datetime.now().strftime("%Y-%m-%d")
+
+    # Always treat slash dates as DD/MM/YYYY
+    if "/" in value:
+        parsed = pd.to_datetime(value, errors="coerce", dayfirst=True)
+    else:
+        parsed = pd.to_datetime(value, errors="coerce", dayfirst=False)
+
+    if pd.isna(parsed):
+        return datetime.now().strftime("%Y-%m-%d")
+
+    return parsed.strftime("%Y-%m-%d")
+
 
 def get_owner_phone_for_uploader(uploader_phone):
     uploader_clean = clean_phone(uploader_phone)

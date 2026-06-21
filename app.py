@@ -29,6 +29,7 @@ from storage_utils import (
     load_entries_for_user,
     update_entry_by_id,
     delete_entry_by_id,
+    normalize_date_ddmmyyyy,
 )
 
 load_dotenv()
@@ -1151,7 +1152,7 @@ if screen == "📊 Dashboard":
                 st.error("Please enter amount greater than 0.")
             else:
                 manual_entry = {
-                    "date": str(manual_date),
+                    "date": normalize_date_ddmmyyyy(str(manual_date)),
                     "transaction_type": manual_type,
                     "vendor": manual_vendor.strip().title(),
                     "user_phone": clean_phone(phone),

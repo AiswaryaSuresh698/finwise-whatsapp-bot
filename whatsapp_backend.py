@@ -33,6 +33,7 @@ from storage_utils import (
     get_owner_phone_for_uploader,
     update_vendor_memory,
     engine,
+    normalize_date_ddmmyyyy,
 )
 
 from sqlalchemy import text
@@ -394,7 +395,9 @@ def save_text_expense(intent_data, owner_phone, uploader_phone):
         extracted_amount = extract_amount(description)
         if extracted_amount:
             amount = extracted_amount
-    date_value = intent_data.get("date") or datetime.now().strftime("%Y-%m-%d")
+    date_value = normalize_date_ddmmyyyy(
+        intent_data.get("date") or datetime.now().strftime("%Y-%m-%d")
+    )
 
     memory_category, memory_folder = apply_vendor_memory(owner_phone, vendor)
 
@@ -518,7 +521,7 @@ def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url,
         )
 
         entry = {
-            "date": extracted.get("date", ""),
+            "date": normalize_date_ddmmyyyy(extracted.get("date", "")),
             "transaction_type": extracted.get("transaction_type", "expense"),
             "vendor": vendor,
             "user_phone": owner_phone,
