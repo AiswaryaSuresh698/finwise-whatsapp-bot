@@ -31,6 +31,18 @@ from storage_utils import (
     delete_entry_by_id,
     normalize_date_ddmmyyyy,
     delete_entries_by_ids,
+    get_business_profile,
+    upsert_business_profile,
+    load_restaurant_uploaders,
+    add_restaurant_uploader,
+    deactivate_restaurant_uploader,
+    load_financial_todos,
+    add_financial_todo,
+    update_financial_todo_status,
+    delete_financial_todo,
+    load_user_categories,
+    add_user_category,
+    delete_user_category,
 )
 
 load_dotenv()
@@ -1574,8 +1586,347 @@ elif screen == "📁 Folder View":
                         st.divider()
 elif screen == "⚙️ Settings":
     st.subheader("⚙️ Settings")
-    st.info("Settings page will be added here.")
-    st.write("Account phone:", phone)
+    st.caption("Manage your business profile, staff uploaders, and financial to-dos.")
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+    "🏪 Business Profile",
+    "👥 WhatsApp Uploaders",
+    "✅ Financial To-Dos",
+    "🏷️ Categories",
+])
+
+    # -----------------------------
+    # Business Profile
+    # -----------------------------
+    with tab1:
+        st.markdown("### 🏪 Business Profile")
+        st.caption("This information will be used later to personalize summaries, reports, and business insights.")
+
+        profile = get_business_profile(phone)
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            business_name = st.text_input(
+                "Business Name",
+                value=profile.get("business_name", ""),
+                placeholder="Example: FinWise Restaurant",
+                key="settings_business_name",
+            )
+
+            owner_name = st.text_input(
+                "Owner Name",
+                value=profile.get("owner_name", ""),
+                placeholder="Example: Rohith",
+                key="settings_owner_name",
+            )
+
+            business_type = st.selectbox(
+                "Business Type",
+                ["Restaurant", "Cafe", "Cloud Kitchen", "Grocery Store", "Retail", "Service Business", "Other"],
+                index=0 if not profile.get("business_type") else
+                ["Restaurant", "Cafe", "Cloud Kitchen", "Grocery Store", "Retail", "Service Business", "Other"].index(profile.get("business_type"))
+                if profile.get("business_type") in ["Restaurant", "Cafe", "Cloud Kitchen", "Grocery Store", "Retail", "Service Business", "Other"]
+                else 0,
+                key="settings_business_type",
+            )
+
+        with c2:
+            business_email = st.text_input(
+                "Business Email",
+                value=profile.get("business_email", ""),
+                placeholder="Example: owner@business.com",
+                key="settings_business_email",
+            )
+
+            currency = st.selectbox(
+                "Currency",
+                ["INR", "CAD", "USD"],
+                index=["INR", "CAD", "USD"].index(profile.get("currency", "INR"))
+                if profile.get("currency", "INR") in ["INR", "CAD", "USD"]
+                else 0,
+                key="settings_currency",
+            )
+
+            timezone = st.selectbox(
+                "Timezone",
+                ["Asia/Kolkata", "America/Toronto", "America/New_York", "UTC"],
+                index=["Asia/Kolkata", "America/Toronto", "America/New_York", "UTC"].index(profile.get("timezone", "Asia/Kolkata"))
+                if profile.get("timezone", "Asia/Kolkata") in ["Asia/Kolkata", "America/Toronto", "America/New_York", "UTC"]
+                else 0,
+                key="settings_timezone",
+            )
+
+        st.write("Account phone:", clean_phone(phone))
+
+        if st.button("💾 Save Business Profile", type="primary", use_container_width=True):
+            upsert_business_profile(
+                owner_phone=phone,
+                business_name=business_name.strip(),
+                owner_name=owner_name.strip(),
+                business_type=business_type,
+                business_email=business_email.strip(),
+                currency=currency,
+                timezone=timezone,
+            )
+
+            st.success("Business profile saved.")
+            st.cache_data.clear()
+            st.rerun()
+
+    # -----------------------------
+    # WhatsApp Uploaders
+    # -----------------------------
+    with tab2:
+        st.markdown("### 👥 WhatsApp Uploaders")
+        st.caption("Add staff numbers here. Staff can upload bills through WhatsApp, but bills will appear in the owner's dashboard.")
+
+        with st.expander("➕ Add New Uploader", expanded=False):
+            uc1, uc2 = st.columns(2)
+
+            with uc1:
+                new_uploader_name = st.text_input(
+                    "Uploader Name",
+                    placeholder="Example: Kitchen Staff",
+                    key="new_uploader_name",
+                )
+
+            with uc2:
+                new_uploader_phone = st.text_input(
+                    "Uploader WhatsApp Number",
+                    placeholder="Example: +91 98765 43210",
+                    key="new_uploader_phone",
+                )
+
+            if st.button("Add Uploader", type="primary", use_container_width=True):
+                if not new_uploader_name.strip():
+                    st.error("Enter uploader name.")
+                elif not clean_phone(new_uploader_phone):
+                    st.error("Enter valid uploader phone.")
+                else:
+                    add_restaurant_uploader(
+                        owner_phone=phone,
+                        uploader_phone=new_uploader_phone,
+                        uploader_name=new_uploader_name,
+                    )
+
+                    st.success("Uploader added.")
+                    st.cache_data.clear()
+                    st.rerun()
+
+        uploaders_df = load_restaurant_uploaders()
+
+        if not uploaders_df.empty:
+            uploaders_df = uploaders_df[
+                uploaders_df["owner_phone"].astype(str).apply(clean_phone) == clean_phone(phone)
+            ].copy()
+
+        if uploaders_df.empty:
+            st.info("No staff uploaders added yet.")
+        else:
+            st.markdown("#### Current Uploaders")
+
+            for _, row in uploaders_df.iterrows():
+                uploader_id = row.get("id", "")
+                uploader_name = row.get("uploader_name", "")
+                uploader_phone = row.get("uploader_phone", "")
+                active = str(row.get("active", "")).lower().strip()
+
+                status_label = "Active" if active in ["yes", "true", "1", "active"] else "Inactive"
+
+                col1, col2, col3 = st.columns([3, 3, 2])
+
+                with col1:
+                    st.write(f"**{uploader_name}**")
+
+                with col2:
+                    st.write(f"`{uploader_phone}`")
+
+                with col3:
+                    if status_label == "Active":
+                        if st.button("Disable", key=f"disable_uploader_{uploader_id}"):
+                            deactivate_restaurant_uploader(uploader_id)
+                            st.success("Uploader disabled.")
+                            st.cache_data.clear()
+                            st.rerun()
+                    else:
+                        st.caption("Inactive")
+
+                st.divider()
+
+    # -----------------------------
+    # Financial To-Dos
+    # -----------------------------
+    with tab3:
+        st.markdown("### ✅ Financial To-Dos")
+        st.caption("Track supplier payments, taxes, license renewals, collections, and finance follow-ups.")
+
+        with st.expander("➕ Add Financial To-Do", expanded=False):
+            tc1, tc2 = st.columns(2)
+
+            with tc1:
+                todo_title = st.text_input(
+                    "Task",
+                    placeholder="Example: Pay milk supplier",
+                    key="todo_title",
+                )
+
+                todo_type = st.selectbox(
+                    "Type",
+                    ["Supplier Payment", "Tax", "License Renewal", "Rent", "Customer Collection", "Banking", "Other"],
+                    key="todo_type",
+                )
+
+                todo_due_date = st.date_input(
+                    "Due Date",
+                    value=date.today(),
+                    key="todo_due_date",
+                )
+
+            with tc2:
+                todo_amount = st.number_input(
+                    "Amount",
+                    min_value=0.0,
+                    step=100.0,
+                    format="%.2f",
+                    key="todo_amount",
+                )
+
+                todo_notes = st.text_area(
+                    "Notes",
+                    placeholder="Example: Confirm payment after UPI transfer",
+                    key="todo_notes",
+                )
+
+            if st.button("Add To-Do", type="primary", use_container_width=True):
+                if not todo_title.strip():
+                    st.error("Enter a task.")
+                else:
+                    add_financial_todo(
+                        owner_phone=phone,
+                        title=todo_title,
+                        todo_type=todo_type,
+                        due_date=normalize_date_ddmmyyyy(str(todo_due_date)),
+                        amount=todo_amount,
+                        notes=todo_notes,
+                    )
+
+                    st.success("Financial to-do added.")
+                    st.cache_data.clear()
+                    st.rerun()
+
+        todos_df = load_financial_todos(phone)
+
+        if todos_df.empty:
+            st.info("No financial to-dos added yet.")
+        else:
+            st.markdown("#### Open To-Dos")
+
+            open_todos = todos_df[
+                todos_df["status"].astype(str).str.lower().str.strip() != "done"
+            ].copy()
+
+            if open_todos.empty:
+                st.success("No open financial to-dos.")
+            else:
+                for _, row in open_todos.iterrows():
+                    todo_id = row.get("id", "")
+                    title = row.get("title", "")
+                    todo_type = row.get("todo_type", "")
+                    due_date = row.get("due_date", "")
+                    amount = float(pd.to_numeric(row.get("amount", 0), errors="coerce") or 0)
+                    notes = row.get("notes", "")
+
+                    with st.container():
+                        c1, c2, c3 = st.columns([4, 2, 2])
+
+                        with c1:
+                            st.write(f"**{title}**")
+                            st.caption(f"{todo_type} | Due: {due_date}")
+                            if notes:
+                                st.caption(notes)
+
+                        with c2:
+                            st.write(f"₹{amount:,.2f}")
+
+                        with c3:
+                            if st.button("Mark Done", key=f"done_todo_{todo_id}"):
+                                update_financial_todo_status(todo_id, "done")
+                                st.success("To-do marked done.")
+                                st.cache_data.clear()
+                                st.rerun()
+
+                            if st.button("Delete", key=f"delete_todo_{todo_id}"):
+                                delete_financial_todo(todo_id)
+                                st.success("To-do deleted.")
+                                st.cache_data.clear()
+                                st.rerun()
+
+                        st.divider()
+
+            with st.expander("View Completed To-Dos"):
+                done_todos = todos_df[
+                    todos_df["status"].astype(str).str.lower().str.strip() == "done"
+                ].copy()
+
+                if done_todos.empty:
+                    st.caption("No completed to-dos yet.")
+                else:
+                    st.dataframe(
+                        done_todos[["title", "todo_type", "due_date", "amount", "notes", "status"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+    with tab4:
+        st.markdown("### 🏷️ Categories")
+        st.caption("Manage custom categories used for manual expenses, WhatsApp bills, and vendor rules.")
+
+        with st.expander("➕ Add Category", expanded=False):
+            new_category = st.text_input(
+                "Category Name",
+                placeholder="Example: Chicken, Milk, Rice",
+                key="new_custom_category",
+            )
+
+            if st.button("Add Category", type="primary", use_container_width=True):
+                if not new_category.strip():
+                    st.error("Enter category name.")
+                else:
+                    added = add_user_category(phone, new_category)
+
+                    if added:
+                        st.success("Category added.")
+                    else:
+                        st.warning("Category already exists.")
+
+                    st.cache_data.clear()
+                    st.rerun()
+
+        categories_df = load_user_categories(phone)
+
+        if categories_df.empty:
+            st.info("No custom categories added yet.")
+        else:
+            st.markdown("#### Current Categories")
+
+            for _, row in categories_df.iterrows():
+                category_id = row.get("id", "")
+                category_name = row.get("category_name", "")
+
+                col1, col2 = st.columns([4, 1])
+
+                with col1:
+                    st.write(f"**{category_name}**")
+
+                with col2:
+                    if st.button("Delete", key=f"delete_category_{category_id}"):
+                        delete_user_category(category_id)
+                        st.success("Category deleted.")
+                        st.cache_data.clear()
+                        st.rerun()
+
+                st.divider()
 
 elif screen == "🎓 Training":
     st.subheader("🎓 Training")

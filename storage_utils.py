@@ -208,6 +208,49 @@ def init_db():
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_vendor_rules_key ON vendor_rules(memory_key);"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_uploaders_phone ON restaurant_uploaders(uploader_phone);"))
 
+        conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS business_profiles (
+            owner_phone TEXT PRIMARY KEY,
+            business_name TEXT,
+            owner_name TEXT,
+            business_type TEXT,
+            business_email TEXT,
+            currency TEXT,
+            timezone TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """))
+
+        conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS financial_todos (
+            id BIGSERIAL PRIMARY KEY,
+            owner_phone TEXT,
+            title TEXT,
+            todo_type TEXT,
+            due_date TEXT,
+            amount TEXT,
+            notes TEXT,
+            status TEXT DEFAULT 'open',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """))
+
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_financial_todos_owner ON financial_todos(owner_phone);"))
+        conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS user_categories (
+            id BIGSERIAL PRIMARY KEY,
+            owner_phone TEXT,
+            category_name TEXT,
+            active TEXT DEFAULT 'yes',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """))
+
+        conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS idx_user_categories_owner
+        ON user_categories(owner_phone);
+        """))
+
 
 def _existing_columns(table_name: str):
     inspector = inspect(engine)
@@ -768,6 +811,240 @@ def delete_entries_by_ids(entry_ids):
                 WHERE id = ANY(:ids)
             """),
             {"ids": ids}
+        )
+
+    return result.rowcount
+
+def get_business_profile(owner_phone):
+    phone_clean = clean_phone(owner_phone)
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT *
+                FROM business_profiles
+                WHERE owner_phone = :owner_phone
+                LIMIT 1
+            """),
+            {"owner_phone": phone_clean}
+        ).mappings().fetchone()
+
+    return dict(row) if row else {}
+
+
+def upsert_business_profile(owner_phone, business_name, owner_name, business_type, business_email, currency, timezone):
+    phone_clean = clean_phone(owner_phone)
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO business_profiles (
+                    owner_phone, business_name, owner_name, business_type,
+                    business_email, currency, timezone, updated_at
+                )
+                VALUES (
+                    :owner_phone, :business_name, :owner_name, :business_type,
+                    :business_email, :currency, :timezone, CURRENT_TIMESTAMP
+                )
+                ON CONFLICT (owner_phone)
+                DO UPDATE SET
+                    business_name = EXCLUDED.business_name,
+                    owner_name = EXCLUDED.owner_name,
+                    business_type = EXCLUDED.business_type,
+                    business_email = EXCLUDED.business_email,
+                    currency = EXCLUDED.currency,
+                    timezone = EXCLUDED.timezone,
+                    updated_at = CURRENT_TIMESTAMP
+            """),
+            {
+                "owner_phone": phone_clean,
+                "business_name": business_name,
+                "owner_name": owner_name,
+                "business_type": business_type,
+                "business_email": business_email,
+                "currency": currency,
+                "timezone": timezone,
+            }
+        )
+
+
+def add_restaurant_uploader(owner_phone, uploader_phone, uploader_name):
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO restaurant_uploaders (
+                    owner_phone, uploader_phone, uploader_name, active
+                )
+                VALUES (
+                    :owner_phone, :uploader_phone, :uploader_name, 'yes'
+                )
+            """),
+            {
+                "owner_phone": clean_phone(owner_phone),
+                "uploader_phone": clean_phone(uploader_phone),
+                "uploader_name": str(uploader_name or "").strip(),
+            }
+        )
+
+
+def deactivate_restaurant_uploader(uploader_id):
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                UPDATE restaurant_uploaders
+                SET active = 'no'
+                WHERE id = :id
+            """),
+            {"id": str(uploader_id)}
+        )
+
+    return result.rowcount
+
+
+def load_financial_todos(owner_phone):
+    phone_clean = clean_phone(owner_phone)
+
+    try:
+        return pd.read_sql(
+            text("""
+                SELECT *
+                FROM financial_todos
+                WHERE owner_phone = :owner_phone
+                ORDER BY
+                    CASE
+                        WHEN due_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN due_date::date
+                        ELSE NULL
+                    END ASC NULLS LAST,
+                    id DESC
+            """),
+            engine,
+            params={"owner_phone": phone_clean}
+        )
+    except Exception as e:
+        print("load_financial_todos error:", str(e))
+        return pd.DataFrame()
+
+
+def add_financial_todo(owner_phone, title, todo_type, due_date, amount, notes):
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO financial_todos (
+                    owner_phone, title, todo_type, due_date, amount, notes, status
+                )
+                VALUES (
+                    :owner_phone, :title, :todo_type, :due_date, :amount, :notes, 'open'
+                )
+            """),
+            {
+                "owner_phone": clean_phone(owner_phone),
+                "title": str(title or "").strip(),
+                "todo_type": str(todo_type or "").strip(),
+                "due_date": str(due_date or "").strip(),
+                "amount": str(amount or "").strip(),
+                "notes": str(notes or "").strip(),
+            }
+        )
+
+
+def update_financial_todo_status(todo_id, status):
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                UPDATE financial_todos
+                SET status = :status
+                WHERE id = :id
+            """),
+            {
+                "id": str(todo_id),
+                "status": str(status or "open").strip(),
+            }
+        )
+
+    return result.rowcount
+
+
+def delete_financial_todo(todo_id):
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                DELETE FROM financial_todos
+                WHERE id = :id
+            """),
+            {"id": str(todo_id)}
+        )
+
+    return result.rowcount
+
+def load_user_categories(owner_phone):
+    phone_clean = clean_phone(owner_phone)
+
+    df = pd.read_sql(
+        text("""
+            SELECT *
+            FROM user_categories
+            WHERE owner_phone = :owner_phone
+            AND COALESCE(active, 'yes') = 'yes'
+            ORDER BY category_name ASC
+        """),
+        engine,
+        params={"owner_phone": phone_clean}
+    )
+
+    if df.empty:
+        return pd.DataFrame(columns=["id", "category_name"])
+
+    return df
+
+
+def add_user_category(owner_phone, category_name):
+    category = str(category_name or "").strip().title()
+
+    if not category:
+        return 0
+
+    with engine.begin() as conn:
+        existing = conn.execute(
+            text("""
+                SELECT id
+                FROM user_categories
+                WHERE owner_phone = :owner_phone
+                AND LOWER(category_name) = LOWER(:category_name)
+                AND COALESCE(active, 'yes') = 'yes'
+                LIMIT 1
+            """),
+            {
+                "owner_phone": clean_phone(owner_phone),
+                "category_name": category,
+            }
+        ).fetchone()
+
+        if existing:
+            return 0
+
+        conn.execute(
+            text("""
+                INSERT INTO user_categories (owner_phone, category_name, active)
+                VALUES (:owner_phone, :category_name, 'yes')
+            """),
+            {
+                "owner_phone": clean_phone(owner_phone),
+                "category_name": category,
+            }
+        )
+
+    return 1
+
+
+def delete_user_category(category_id):
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                UPDATE user_categories
+                SET active = 'no'
+                WHERE id = :id
+            """),
+            {"id": str(category_id)}
         )
 
     return result.rowcount
