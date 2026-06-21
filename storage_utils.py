@@ -466,6 +466,22 @@ def load_entries_for_user(user_phone, limit=500):
         print("load_entries_for_user error:", str(e))
         return pd.DataFrame()
 
+def delete_entries_by_ids(entry_ids):
+    ids = [str(x).strip() for x in entry_ids if str(x).strip()]
+
+    if not ids:
+        return 0
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                DELETE FROM entries
+                WHERE id = ANY(:ids)
+            """),
+            {"ids": ids}
+        )
+
+    return result.rowcount
 
 def load_entries():
     return read_sheet("entries")
