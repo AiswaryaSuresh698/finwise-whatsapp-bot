@@ -30,6 +30,7 @@ from storage_utils import (
     update_entry_by_id,
     delete_entry_by_id,
     normalize_date_ddmmyyyy,
+    delete_entries_by_ids,
 )
 
 load_dotenv()
@@ -1299,25 +1300,44 @@ if screen == "📊 Dashboard":
             edited_df_mobile = pd.DataFrame(mobile_rows)
 
         def save_edited_expenses(edited_data, original_df, phone):
+            updated_count = 0
+
             for _, row in edited_data.iterrows():
                 entry_id = str(row.get("db_id", "")).strip()
 
                 if not entry_id:
                     continue
 
+                original_match = original_df[original_df["id"].astype(str) == entry_id]
+
+                if original_match.empty:
+                    continue
+
+                original_row = original_match.iloc[0]
+
                 new_category = str(row.get("Category", "")).strip()
                 new_vendor = str(row.get("Vendor", "")).strip()
-                new_amount = pd.to_numeric(row.get("Amount", 0), errors="coerce")
+                new_amount = float(pd.to_numeric(row.get("Amount", 0), errors="coerce") or 0)
 
-                if pd.isna(new_amount):
-                    new_amount = 0
+                old_category = str(original_row.get("category", "")).strip()
+                old_vendor = str(original_row.get("vendor", "")).strip()
+                old_amount = float(pd.to_numeric(original_row.get("total", 0), errors="coerce") or 0)
+
+                if (
+                    new_category == old_category
+                    and new_vendor == old_vendor
+                    and new_amount == old_amount
+                ):
+                    continue
 
                 update_entry_by_id(
                     entry_id=entry_id,
                     category=new_category,
-                    amount=float(new_amount),
+                    amount=new_amount,
                     vendor=new_vendor,
                 )
+
+                updated_count += 1
 
                 if new_vendor and new_category:
                     update_vendor_memory(
@@ -1327,6 +1347,8 @@ if screen == "📊 Dashboard":
                         folder=new_category,
                     )
 
+            return updated_count
+
 
         def delete_selected_expenses(edited_data, original_df, phone):
             selected_rows = edited_data[edited_data["Delete?"] == True]
@@ -1334,15 +1356,9 @@ if screen == "📊 Dashboard":
             if selected_rows.empty:
                 return 0
 
-            deleted_count = 0
+            ids_to_delete = selected_rows["db_id"].astype(str).str.strip().tolist()
 
-            for _, row in selected_rows.iterrows():
-                entry_id = str(row.get("db_id", "")).strip()
-
-                if entry_id:
-                    deleted_count += delete_entry_by_id(entry_id)
-
-            return deleted_count
+            return delete_entries_by_ids(ids_to_delete)
         
         with st.container(key="desktop_expense_buttons"):
             if st.button("💾 Save Changes", type="primary", use_container_width=True, key="desktop_save_expenses"):
