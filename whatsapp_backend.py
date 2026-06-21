@@ -34,9 +34,11 @@ from storage_utils import (
     update_vendor_memory,
     engine,
     normalize_date_ddmmyyyy,
+    add_financial_todo,
 )
 
 from sqlalchemy import text
+
 
 
 
@@ -1210,6 +1212,63 @@ def format_finance_answer(user_question, result):
             return "\n".join(lines)
 
     return "I couldn't answer that yet. Try asking: How much did I spend this month?"
+
+import re
+from datetime import datetime
+
+def is_todo_message(message: str) -> bool:
+    msg = str(message or "").strip().lower()
+    return (
+        msg.startswith("to do")
+        or msg.startswith("todo")
+        or msg.startswith("to-do")
+    )
+
+
+def parse_todo_message(message: str) -> dict:
+    text = str(message or "").strip()
+
+    # Remove first line marker: "to do", "todo", "to-do"
+    lines = text.splitlines()
+
+    if lines and lines[0].strip().lower() in ["to do", "todo", "to-do"]:
+        task_text = "\n".join(lines[1:]).strip()
+    else:
+        task_text = re.sub(r"^(to do|todo|to-do)\s*:?", "", text, flags=re.I).strip()
+
+    amount = ""
+    amount_match = re.search(r"(₹|rs\.?|inr)?\s?(\d+(?:,\d+)*(?:\.\d+)?)", task_text, re.I)
+    if amount_match:
+        amount = amount_match.group(2).replace(",", "")
+
+    due_date = ""
+    date_match = re.search(r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", task_text)
+    if date_match:
+        due_date = normalize_date_ddmmyyyy(date_match.group(1))
+
+    todo_type = "Other"
+    lower_text = task_text.lower()
+
+    if any(x in lower_text for x in ["supplier", "vendor", "chicken", "milk", "rice", "grocery"]):
+        todo_type = "Supplier Payment"
+    elif any(x in lower_text for x in ["gst", "tax"]):
+        todo_type = "Tax"
+    elif any(x in lower_text for x in ["license", "fssai", "renewal"]):
+        todo_type = "License Renewal"
+    elif "rent" in lower_text:
+        todo_type = "Rent"
+    elif any(x in lower_text for x in ["collect", "customer", "payment pending"]):
+        todo_type = "Customer Collection"
+    elif any(x in lower_text for x in ["bank", "loan", "emi"]):
+        todo_type = "Banking"
+
+    return {
+        "title": task_text,
+        "todo_type": todo_type,
+        "due_date": due_date,
+        "amount": amount,
+        "notes": "",
+    }
     
 def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_msg):
     lazy_init()
@@ -1260,6 +1319,36 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
                 f"Total: ₹{pending_entry.get('total', '')}\n"
                 f"Category saved as: {category}"
             )
+            return
+        
+        if is_todo_message(incoming_msg):
+            todo = parse_todo_message(incoming_msg)
+
+            if not todo["title"]:
+                send_whatsapp_message(
+                    raw_from,
+                    "Please send your to-do like this:\n\nto do\norder chicken 5 kg"
+                )
+                return
+
+            add_financial_todo(
+                owner_phone=owner_phone,
+                title=todo["title"],
+                todo_type=todo["todo_type"],
+                due_date=todo["due_date"],
+                amount=todo["amount"],
+                notes=todo["notes"],
+            )
+
+            reply = f"To-do saved ✅\n\nTask: {todo['title']}\nType: {todo['todo_type']}"
+
+            if todo["due_date"]:
+                reply += f"\nDue: {todo['due_date']}"
+
+            if todo["amount"]:
+                reply += f"\nAmount: ₹{todo['amount']}"
+
+            send_whatsapp_message(raw_from, reply)
             return
 
         if intent == "expense_entry":
