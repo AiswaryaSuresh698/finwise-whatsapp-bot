@@ -73,7 +73,7 @@ PENDING_CATEGORY_FILE = "data/pending_category.json"
 
 
 
-TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+15559208533")
 
 
 def send_whatsapp_message(to_number, message):

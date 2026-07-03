@@ -280,7 +280,7 @@ def metric_card(label, value, icon, bg, color):
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+15559208533")
 
 def mobile_table_html(df):
     return df.to_html(index=False, escape=False)
@@ -980,7 +980,7 @@ if not st.session_state.logged_in:
 # -----------------------------
 # Header
 # -----------------------------
-whatsapp_number = "+14155238886"
+whatsapp_number = "+15559208533"
 whatsapp_link = f"https://wa.me/{whatsapp_number.replace('+', '')}"
 phone = st.session_state.user_phone
 
@@ -1030,7 +1030,7 @@ with top_right:
         '<div style="display:flex; gap:16px; align-items:center;">'
         '<div style="background:#DCFCE7; color:#16A34A; width:54px; height:54px; border-radius:16px; display:flex; align-items:center; justify-content:center; font-size:30px; font-weight:800;">📞</div>'
         '<div style="flex:1;"><div style="font-size:18px; font-weight:800; color:#0F172A;">Send bills on WhatsApp</div>'
-        '<div style="font-size:14px; color:#475569; line-height:1.4; margin-top:4px;">Send bill images, GPay screenshots, or expense messages to FinWise at +14155238886.</div></div>'
+        '<div style="font-size:14px; color:#475569; line-height:1.4; margin-top:4px;">Send bill images, GPay screenshots, or expense messages to FinWise at +15559208533.</div></div>'
         '</div></div>',
         unsafe_allow_html=True,
     )
