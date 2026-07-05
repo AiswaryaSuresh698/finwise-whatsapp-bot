@@ -1307,7 +1307,7 @@ if screen == "📊 Dashboard":
                         default=False,
                     ),
                 },
-                disabled=["Expense Number", "Type", "Description"],
+                disabled=["Expense Number", "Type"],
             )
 
         with st.container(key="mobile_expense_editor"):
@@ -1368,53 +1368,55 @@ if screen == "📊 Dashboard":
         def save_edited_expenses(edited_data, original_df, phone):
             updated_count = 0
 
+            original_lookup = original_df.set_index(original_df["id"].astype(str))
+
             for _, row in edited_data.iterrows():
                 entry_id = str(row.get("db_id", "")).strip()
 
-                if not entry_id:
+                if not entry_id or entry_id not in original_lookup.index:
                     continue
 
-                original_match = original_df[original_df["id"].astype(str) == entry_id]
-
-                if original_match.empty:
-                    continue
-
-                original_row = original_match.iloc[0]
+                original_row = original_lookup.loc[entry_id]
 
                 new_category = str(row.get("Category", "")).strip()
                 new_vendor = str(row.get("Vendor", "")).strip()
+                new_description = str(row.get("Description", "")).strip()
                 new_amount = float(pd.to_numeric(row.get("Amount", 0), errors="coerce") or 0)
 
                 old_category = str(original_row.get("category", "")).strip()
                 old_vendor = str(original_row.get("vendor", "")).strip()
+                old_description = str(original_row.get("description", "")).strip()
                 old_amount = float(pd.to_numeric(original_row.get("total", 0), errors="coerce") or 0)
 
-                if (
-                    new_category == old_category
-                    and new_vendor == old_vendor
-                    and new_amount == old_amount
-                ):
+                category_changed = new_category != old_category
+                vendor_changed = new_vendor != old_vendor
+                description_changed = new_description != old_description
+                amount_changed = new_amount != old_amount
+
+                if not any([category_changed, vendor_changed, description_changed, amount_changed]):
                     continue
 
                 update_entry_by_id(
                     entry_id=entry_id,
-                    category=new_category,
-                    amount=new_amount,
-                    vendor=new_vendor,
+                    category=new_category if category_changed else None,
+                    amount=new_amount if amount_changed else None,
+                    vendor=new_vendor if vendor_changed else None,
+                    description=new_description if description_changed else None,
                 )
 
                 updated_count += 1
 
-                if new_vendor and new_category:
-                    update_vendor_memory(
-                        user_phone=phone,
-                        vendor=new_vendor,
-                        category=new_category,
-                        folder=new_category,
-                    )
+                # Only update vendor memory when vendor/category changed
+                if category_changed or vendor_changed:
+                    if new_vendor and new_category:
+                        update_vendor_memory(
+                            user_phone=phone,
+                            vendor=new_vendor,
+                            category=new_category,
+                            folder=new_category,
+                        )
 
             return updated_count
-
 
         def delete_selected_expenses(edited_data, original_df, phone):
             selected_rows = edited_data[edited_data["Delete?"] == True]

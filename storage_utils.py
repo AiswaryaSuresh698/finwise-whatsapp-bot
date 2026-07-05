@@ -61,7 +61,7 @@ def get_s3_client():
 s3 = get_s3_client()
 
 
-def update_entry_by_id(entry_id, category=None, amount=None, vendor=None):
+def update_entry_by_id(entry_id, category=None, amount=None, vendor=None, description=None):
     updates = []
     params = {"id": str(entry_id)}
 
@@ -78,6 +78,10 @@ def update_entry_by_id(entry_id, category=None, amount=None, vendor=None):
     if vendor is not None:
         updates.append("vendor = :vendor")
         params["vendor"] = str(vendor)
+
+    if description is not None:
+        updates.append("description = :description")
+        params["description"] = str(description)
 
     if not updates:
         return 0
