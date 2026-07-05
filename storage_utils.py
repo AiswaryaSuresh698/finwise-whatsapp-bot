@@ -207,6 +207,10 @@ def init_db():
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_entries_vendor ON entries(vendor);"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_vendor_rules_key ON vendor_rules(memory_key);"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_uploaders_phone ON restaurant_uploaders(uploader_phone);"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_entries_user_phone ON entries(user_phone);"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_entries_user_phone_date ON entries(user_phone, date);"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_entries_is_deleted ON entries(is_deleted);"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_petpooja_user_phone ON petpooja_entries(user_phone);"))
 
         conn.execute(text("""
         CREATE TABLE IF NOT EXISTS business_profiles (
@@ -1048,3 +1052,135 @@ def delete_user_category(category_id):
         )
 
     return result.rowcount
+
+def load_petpooja_entries_for_user(phone, limit=1000):
+    if engine is None:
+        return pd.DataFrame()
+
+    try:
+        phone_clean = clean_phone(phone)
+
+        return pd.read_sql(
+            text("""
+                SELECT *
+                FROM petpooja_entries
+                WHERE user_phone = :user_phone
+                ORDER BY id DESC
+                LIMIT :limit
+            """),
+            engine,
+            params={
+                "user_phone": phone_clean,
+                "limit": int(limit),
+            }
+        )
+
+    except Exception as e:
+        print("load_petpooja_entries_for_user error:", str(e))
+        return pd.DataFrame()
+
+
+def get_dashboard_totals_for_user(phone, start_date=None, end_date=None):
+    if engine is None:
+        return 0.0, 0.0
+
+    try:
+        phone_clean = clean_phone(phone)
+
+        date_sql = ""
+        params = {"user_phone": phone_clean}
+
+        if start_date and end_date:
+            date_sql = """
+                AND CASE
+                    WHEN date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                    THEN date::date
+                    ELSE NULL
+                END BETWEEN :start_date AND :end_date
+            """
+            params["start_date"] = start_date
+            params["end_date"] = end_date
+
+        query = text(f"""
+            SELECT
+                COALESCE(SUM(
+                    CASE
+                        WHEN LOWER(COALESCE(transaction_type, '')) = 'income'
+                        THEN COALESCE(NULLIF(total, ''), '0')::numeric
+                        ELSE 0
+                    END
+                ), 0) AS whatsapp_income,
+
+                COALESCE(SUM(
+                    CASE
+                        WHEN LOWER(COALESCE(transaction_type, '')) = 'expense'
+                        THEN COALESCE(NULLIF(total, ''), '0')::numeric
+                        ELSE 0
+                    END
+                ), 0) AS total_expense
+            FROM entries
+            WHERE user_phone = :user_phone
+            AND COALESCE(is_deleted, '') != 'yes'
+            AND LOWER(COALESCE(source, '')) != 'petpooja'
+            {date_sql}
+        """)
+
+        df = pd.read_sql(query, engine, params=params)
+
+        if df.empty:
+            return 0.0, 0.0
+
+        return (
+            float(df.iloc[0]["whatsapp_income"] or 0),
+            float(df.iloc[0]["total_expense"] or 0),
+        )
+
+    except Exception as e:
+        print("get_dashboard_totals_for_user error:", str(e))
+        return 0.0, 0.0
+
+
+def get_petpooja_total_for_user(phone, start_date=None, end_date=None):
+    if engine is None:
+        return 0.0
+
+    try:
+        phone_clean = clean_phone(phone)
+
+        date_sql = ""
+        params = {"user_phone": phone_clean}
+
+        if start_date and end_date:
+            date_sql = """
+                AND CASE
+                    WHEN "Date" ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                    THEN "Date"::date
+                    WHEN "date" ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                    THEN "date"::date
+                    ELSE NULL
+                END BETWEEN :start_date AND :end_date
+            """
+            params["start_date"] = start_date
+            params["end_date"] = end_date
+
+        df = pd.read_sql(
+            text(f"""
+                SELECT COALESCE(SUM(
+                    COALESCE(NULLIF(total, ''), NULLIF("Total", ''), '0')::numeric
+                ), 0) AS petpooja_total
+                FROM petpooja_entries
+                WHERE user_phone = :user_phone
+                {date_sql}
+            """),
+            engine,
+            params=params
+        )
+
+        if df.empty:
+            return 0.0
+
+        return float(df.iloc[0]["petpooja_total"] or 0)
+
+    except Exception as e:
+        print("get_petpooja_total_for_user error:", str(e))
+        return 0.0

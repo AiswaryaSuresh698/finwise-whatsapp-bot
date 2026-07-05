@@ -43,6 +43,9 @@ from storage_utils import (
     load_user_categories,
     add_user_category,
     delete_user_category,
+    load_petpooja_entries_for_user,
+    get_dashboard_totals_for_user,
+    get_petpooja_total_for_user
 )
 
 load_dotenv()
@@ -68,17 +71,29 @@ def initialize_database():
 
 initialize_database()
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=300)
 def cached_load_entries():
     return load_entries()
 
-@st.cache_data(ttl=30)
-def cached_load_entries_for_user(phone, limit=500):
+@st.cache_data(ttl=300)
+def cached_load_entries_for_user(phone, limit=100):
     return load_entries_for_user(phone, limit)
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=300)
+def cached_load_petpooja_entries_for_user(phone, limit=1000):
+    return load_petpooja_entries_for_user(phone, limit)
+
+@st.cache_data(ttl=300)
 def cached_load_petpooja_entries():
     return load_petpooja_entries()
+
+@st.cache_data(ttl=120)
+def cached_dashboard_totals(phone, start_date=None, end_date=None):
+    return get_dashboard_totals_for_user(phone, start_date, end_date)
+
+@st.cache_data(ttl=120)
+def cached_petpooja_total(phone, start_date=None, end_date=None):
+    return get_petpooja_total_for_user(phone, start_date, end_date)
 
 ensure_storage()
 
@@ -1091,7 +1106,10 @@ if screen == "📊 Dashboard":
     
 
     # WhatsApp entries
-    df = cached_load_entries_for_user(phone, limit=500)
+    if "expense_limit" not in st.session_state:
+        st.session_state.expense_limit = 100
+
+    df = cached_load_entries_for_user(phone, limit=st.session_state.expense_limit)
     if not df.empty and "is_deleted" in df.columns:
         df = df[df["is_deleted"].astype(str).str.lower() != "yes"].copy()
 
@@ -1107,10 +1125,25 @@ if screen == "📊 Dashboard":
         df["total"] = pd.to_numeric(df.get("total", 0), errors="coerce").fillna(0)
         df = filter_date(df, "date_parsed", date_filter, start_date, end_date)
 
-    
+
+    col_more, col_all = st.columns(2)
+
+    with col_more:
+        if st.button("Load 100 more bills", use_container_width=True):
+            st.session_state.expense_limit += 100
+            st.cache_data.clear()
+            st.rerun()
+
+    with col_all:
+        if st.button("Show all bills", use_container_width=True):
+            st.session_state.expense_limit = 5000
+            st.cache_data.clear()
+            st.rerun()
+        
 
     # Saved Petpooja entries
-    petpooja_saved_df = normalize_saved_petpooja_df(cached_load_petpooja_entries())
+    petpooja_saved_df = normalize_saved_petpooja_df(
+    cached_load_petpooja_entries_for_user(phone, limit=1000))
     if not petpooja_saved_df.empty:
         petpooja_saved_df = petpooja_saved_df[
             petpooja_saved_df["user_phone"].astype(str).apply(clean_phone) == clean_phone(phone)
@@ -1122,12 +1155,24 @@ if screen == "📊 Dashboard":
         petpooja_filtered_income = 0.0
 
     # Totals
-    if not df.empty:
-        whatsapp_income = df.loc[df["transaction_type"].astype(str).str.lower() == "income", "total"].sum() if "transaction_type" in df.columns else 0.0
-        total_expense = df.loc[df["transaction_type"].astype(str).str.lower() == "expense", "total"].sum() if "transaction_type" in df.columns else df["total"].sum()
+    if date_filter == "No Filter":
+        sql_start_date = None
+        sql_end_date = None
     else:
-        whatsapp_income = 0.0
-        total_expense = 0.0
+        sql_start_date = start_date
+        sql_end_date = end_date
+
+    whatsapp_income, total_expense = cached_dashboard_totals(
+        phone,
+        sql_start_date,
+        sql_end_date
+    )
+
+    petpooja_filtered_income = cached_petpooja_total(
+        phone,
+        sql_start_date,
+        sql_end_date
+    )
 
     total_income = whatsapp_income + petpooja_filtered_income
     net_amount = total_income - total_expense
@@ -1271,7 +1316,9 @@ if screen == "📊 Dashboard":
 
             mobile_rows = []
 
-            for i, row in display_df.iterrows():
+            mobile_display_df = display_df.head(25)
+
+            for i, row in mobile_display_df.iterrows():
                 with st.expander(
                     f'{row["Expense Number"]} • {row["Date"]} • {row["Vendor"]} • ₹{float(row["Amount"]):,.2f}',
                     expanded=False
@@ -1487,13 +1534,24 @@ if screen == "📊 Dashboard":
                 unsafe_allow_html=True
             )
 
+    st.write("### Download Report")
+
+if st.button("📄 Prepare Excel Download", use_container_width=True):
     output = BytesIO()
-    export_df = df.drop(columns=["user_phone_clean","id", "date_parsed", "transaction_type", "user_phone", "category", "subtotal", "tax", "currency", "confidence", "reason", "image_path", "created_at", "payment_method", "source", "duplicate_key" ], errors="ignore")
+
+    export_df = df.drop(
+        columns=[
+            "user_phone_clean", "id", "date_parsed", "transaction_type",
+            "user_phone", "category", "subtotal", "tax", "currency",
+            "confidence", "reason", "image_path", "created_at",
+            "payment_method", "source", "duplicate_key"
+        ],
+        errors="ignore"
+    )
+
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-
-
         export_df = export_df.reset_index(drop=True)
-        
+
         export_df.insert(
             0,
             "Expense Number",
@@ -1501,15 +1559,28 @@ if screen == "📊 Dashboard":
         )
 
         export_df.to_excel(writer, index=False, sheet_name="WhatsApp Expenses")
+
         if not petpooja_saved_df.empty:
-            petpooja_saved_df.drop(columns=["date_parsed"], errors="ignore").to_excel(writer, index=False, sheet_name="Petpooja Sales")
+            petpooja_saved_df.drop(
+                columns=["date_parsed"],
+                errors="ignore"
+            ).to_excel(writer, index=False, sheet_name="Petpooja Sales")
+
         pd.DataFrame([
             {"Metric": "Total Income", "Amount": total_income},
             {"Metric": "Total Expense", "Amount": total_expense},
             {"Metric": "Net", "Amount": net_amount},
         ]).to_excel(writer, index=False, sheet_name="Totals")
+
     output.seek(0)
-    st.download_button("⬇️ Download Excel", data=output, file_name="finwise_extracted_bills.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    st.download_button(
+        "⬇️ Download Excel",
+        data=output,
+        file_name="finwise_extracted_bills.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
 
 elif screen == "📁 Folder View":
 
