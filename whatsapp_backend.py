@@ -1682,21 +1682,21 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
     try:
         incoming_msg = str(incoming_msg or "").strip()
 
+        # Friendly messages should work anytime
+        if is_greeting_message(incoming_msg):
+            send_whatsapp_message(raw_from, get_greeting_reply())
+            return
+
+        if is_help_message(incoming_msg):
+            send_whatsapp_message(raw_from, get_help_reply())
+            return
+
+        if is_thanks_message(incoming_msg):
+            send_whatsapp_message(raw_from, get_thanks_reply())
+            return
+
         pending_entry = get_pending_entry(uploader_phone)
 
-        # Friendly messages first
-        if not pending_entry:
-            if is_greeting_message(incoming_msg):
-                send_whatsapp_message(raw_from, get_greeting_reply())
-                return
-
-            if is_help_message(incoming_msg):
-                send_whatsapp_message(raw_from, get_help_reply())
-                return
-
-            if is_thanks_message(incoming_msg):
-                send_whatsapp_message(raw_from, get_thanks_reply())
-                return
             
         comma_expense = parse_comma_text_expense(incoming_msg)
 
