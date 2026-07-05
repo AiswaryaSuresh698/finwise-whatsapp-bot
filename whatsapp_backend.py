@@ -11,6 +11,7 @@ import pandas as pd
 from io import BytesIO
 from datetime import datetime, timedelta
 from difflib import get_close_matches
+
 from storage_utils import clean_phone, get_owner_phone_for_uploader
 
 from flask import Flask, request
@@ -320,9 +321,9 @@ def parse_comma_text_expense(text):
     if len(parts) < 3:
         return None
 
-    item = parts[0]
-    vendor = parts[1]
-    amount = extract_amount(parts[2])
+    vendor = parts[0]
+    amount = extract_amount(parts[1])
+    item = parts[2]
     date_text = parts[3] if len(parts) >= 4 else "today"
 
     if not item or not vendor or amount is None:
@@ -519,33 +520,40 @@ def save_text_expense(intent_data, owner_phone, uploader_phone):
 
     append_entry(entry)
 
-    last_expense = get_last_saved_expense(owner_phone, uploader_phone)
+    # Do not let memory/context errors block the saved response
+    try:
+        last_expense = get_last_saved_expense(owner_phone, uploader_phone)
 
-    if last_expense:
-        save_conversation_context(uploader_phone, {
-            "state": "last_expense_saved",
-            "entry_id": str(last_expense.get("id")),
-            "vendor": last_expense.get("vendor", ""),
-            "amount": last_expense.get("total", ""),
-            "date": last_expense.get("date", ""),
-            "category": last_expense.get("category", ""),
-        })
+        if last_expense:
+            save_conversation_context(uploader_phone, {
+                "state": "last_expense_saved",
+                "entry_id": str(last_expense.get("id")),
+                "vendor": last_expense.get("vendor", ""),
+                "amount": str(last_expense.get("total", "")),
+                "date": last_expense.get("date", ""),
+                "category": last_expense.get("category", ""),
+            })
+    except Exception as e:
+        print("CONVERSATION CONTEXT SAVE ERROR:", str(e), flush=True)
 
-    update_vendor_memory(
-        user_phone=owner_phone,
-        vendor=vendor,
-        category=category,
-        folder=folder,
-    )
+    try:
+        update_vendor_memory(
+            user_phone=owner_phone,
+            vendor=vendor,
+            category=category,
+            folder=folder,
+        )
+    except Exception as e:
+        print("VENDOR MEMORY UPDATE ERROR:", str(e), flush=True)
 
     return True, (
-    f"✅ Expense saved\n\n"
-    f"Vendor: {vendor.title()}\n"
-    f"Amount: ₹{amount:,.2f}\n"
-    f"Date: {date_value}\n"
-    f"Category: {category}\n\n"
-    f"Need anything else?"
-)
+        f"✅ Expense saved\n\n"
+        f"Vendor: {vendor.title()}\n"
+        f"Amount: ₹{amount:,.2f}\n"
+        f"Date: {date_value}\n"
+        f"Category: {category}\n\n"
+        f"Need anything else?"
+    )
 
 def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url, media_type):
     lazy_init()
@@ -1676,6 +1684,37 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
 
         pending_entry = get_pending_entry(uploader_phone)
 
+        # Friendly messages first
+        if not pending_entry:
+            if is_greeting_message(incoming_msg):
+                send_whatsapp_message(raw_from, get_greeting_reply())
+                return
+
+            if is_help_message(incoming_msg):
+                send_whatsapp_message(raw_from, get_help_reply())
+                return
+
+            if is_thanks_message(incoming_msg):
+                send_whatsapp_message(raw_from, get_thanks_reply())
+                return
+            
+        comma_expense = parse_comma_text_expense(incoming_msg)
+
+        if comma_expense:
+            intent_data = {
+                "intent": "expense_entry",
+                "vendor": comma_expense["vendor"],
+                "description": comma_expense["item"],
+                "category": comma_expense["category"],
+                "amount": comma_expense["amount"],
+                "date": comma_expense["date"],
+                "currency": "INR",
+            }
+
+            success, message = save_text_expense(intent_data, owner_phone, uploader_phone)
+            send_whatsapp_message(raw_from, message)
+            return
+
         if not pending_entry:
             handled = handle_conversation_context(
                 raw_from=raw_from,
@@ -1686,6 +1725,9 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
 
             if handled:
                 return
+            
+
+        
 
         quick_category = match_category(incoming_msg)
 
