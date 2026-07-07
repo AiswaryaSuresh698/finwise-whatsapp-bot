@@ -1878,18 +1878,18 @@ def whatsapp():
     print("Media count:", num_media, flush=True)
 
     # Simple messages should NOT touch RDS
-    if num_media == 0:
-        if is_greeting_message(incoming_msg):
-            response.message(get_greeting_reply())
-            return str(response)
+    
+    if is_greeting_message(incoming_msg):
+        response.message(get_greeting_reply())
+        return str(response)
 
-        if is_help_message(incoming_msg):
-            response.message(get_help_reply())
-            return str(response)
+    if is_help_message(incoming_msg):
+        response.message(get_help_reply())
+        return str(response)
 
-        if is_thanks_message(incoming_msg):
-            response.message(get_thanks_reply())
-            return str(response)
+    if is_thanks_message(incoming_msg):
+        response.message(get_thanks_reply())
+        return str(response)
 
     # Only initialize DB/OpenAI/Twilio after simple replies
     lazy_init()
