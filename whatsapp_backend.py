@@ -1886,6 +1886,28 @@ def whatsapp():
     print("Body:", incoming_msg, flush=True)
     print("Media count:", num_media, flush=True)
 
+    if num_media == 0:
+        if is_greeting_message(incoming_msg):
+            response.message(get_greeting_reply())
+            return str(response)
+
+        if is_help_message(incoming_msg):
+            response.message(get_help_reply())
+            return str(response)
+
+        if is_thanks_message(incoming_msg):
+            response.message(get_thanks_reply())
+            return str(response)
+
+        threading.Thread(
+            target=process_text_in_background,
+            args=(raw_from, owner_phone, uploader_phone, incoming_msg),
+            daemon=True
+        ).start()
+
+        response.message("Message received ✅\nProcessing now...")
+        return str(response)
+
     media_url = request.form.get("MediaUrl0")
     media_type = request.form.get("MediaContentType0", "")
 
