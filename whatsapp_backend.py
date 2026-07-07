@@ -1861,7 +1861,6 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
-    lazy_init()
     response = MessagingResponse()
 
     print("\n========== NEW WHATSAPP REQUEST ==========", flush=True)
@@ -1870,22 +1869,15 @@ def whatsapp():
     from_number = raw_from.replace("whatsapp:", "")
     uploader_phone = clean_phone(from_number)
 
-    # If uploader is staff, this returns owner phone.
-    # If uploader is not staff, treat uploader as owner.
-    owner_phone = get_owner_phone_for_uploader(uploader_phone)
-
-    if owner_phone is None:
-        owner_phone = uploader_phone
-
     incoming_msg = request.form.get("Body", "").strip()
     num_media = int(request.form.get("NumMedia", "0") or 0)
 
     print("From:", raw_from, flush=True)
     print("Uploader Phone:", uploader_phone, flush=True)
-    print("Owner Phone:", owner_phone, flush=True)
     print("Body:", incoming_msg, flush=True)
     print("Media count:", num_media, flush=True)
 
+    # Simple messages should NOT touch RDS
     if num_media == 0:
         if is_greeting_message(incoming_msg):
             response.message(get_greeting_reply())
@@ -1899,6 +1891,17 @@ def whatsapp():
             response.message(get_thanks_reply())
             return str(response)
 
+    # Only initialize DB/OpenAI/Twilio after simple replies
+    lazy_init()
+
+    owner_phone = get_owner_phone_for_uploader(uploader_phone)
+
+    if owner_phone is None:
+        owner_phone = uploader_phone
+
+    print("Owner Phone:", owner_phone, flush=True)
+
+    if num_media == 0:
         threading.Thread(
             target=process_text_in_background,
             args=(raw_from, owner_phone, uploader_phone, incoming_msg),
@@ -1910,29 +1913,6 @@ def whatsapp():
 
     media_url = request.form.get("MediaUrl0")
     media_type = request.form.get("MediaContentType0", "")
-
-    if num_media == 0:
-        # Instant friendly replies
-        if is_greeting_message(incoming_msg):
-            response.message(get_greeting_reply())
-            return str(response)
-
-        if is_help_message(incoming_msg):
-            response.message(get_help_reply())
-            return str(response)
-
-        if is_thanks_message(incoming_msg):
-            response.message(get_thanks_reply())
-            return str(response)
-
-        threading.Thread(
-            target=process_text_in_background,
-            args=(raw_from, owner_phone, uploader_phone, incoming_msg),
-            daemon=True
-        ).start()
-
-        response.message("Message received ✅\nProcessing now...")
-        return str(response)
 
     if not media_url:
         response.message("Please upload a bill image.")
@@ -1949,4 +1929,3 @@ def whatsapp():
 
     response.message("Bill received ✅\nProcessing now...")
     return str(response)
-        
