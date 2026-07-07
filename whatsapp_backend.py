@@ -204,7 +204,10 @@ HELP_WORDS = {
 
 
 def normalize_chat_text(text):
-    return re.sub(r"\s+", " ", str(text or "").lower().strip())
+    text = str(text or "").lower().strip()
+    text = re.sub(r"[^\w\s]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text
 
 
 def is_greeting_message(text):
@@ -1887,6 +1890,19 @@ def whatsapp():
     media_type = request.form.get("MediaContentType0", "")
 
     if num_media == 0:
+        # Instant friendly replies
+        if is_greeting_message(incoming_msg):
+            response.message(get_greeting_reply())
+            return str(response)
+
+        if is_help_message(incoming_msg):
+            response.message(get_help_reply())
+            return str(response)
+
+        if is_thanks_message(incoming_msg):
+            response.message(get_thanks_reply())
+            return str(response)
+
         threading.Thread(
             target=process_text_in_background,
             args=(raw_from, owner_phone, uploader_phone, incoming_msg),
