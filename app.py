@@ -9,6 +9,7 @@ import qrcode
 import streamlit as st
 from twilio.rest import Client
 from dotenv import load_dotenv
+import calendar
 
 from storage_utils import (
     DEFAULT_FOLDERS,
@@ -57,6 +58,9 @@ from storage_utils import (
     append_income_entry,
     load_income_entries_for_user,
     get_manual_income_total_for_user,
+    get_monthly_analysis_for_user,
+    get_month_expense_breakdown_for_user,
+    compare_expense_categories_for_user,
 )
 
 load_dotenv()
@@ -134,6 +138,41 @@ def cached_income_entries(
         start_date=start_date,
         end_date=end_date,
         limit=limit,
+    )
+
+@st.cache_data(ttl=300)
+def cached_monthly_analysis(phone, year):
+    return get_monthly_analysis_for_user(
+        phone=phone,
+        year=year,
+    )
+
+
+@st.cache_data(ttl=300)
+def cached_month_expense_breakdown(
+    phone,
+    year,
+    month
+):
+    return get_month_expense_breakdown_for_user(
+        phone=phone,
+        year=year,
+        month=month,
+    )
+
+
+@st.cache_data(ttl=300)
+def cached_month_category_comparison(
+    phone,
+    year,
+    base_month,
+    comparison_month
+):
+    return compare_expense_categories_for_user(
+        phone=phone,
+        year=year,
+        base_month=base_month,
+        comparison_month=comparison_month,
     )
 
 
@@ -338,6 +377,103 @@ TWILIO_WHATSAPP_FROM = os.getenv(
     "TWILIO_WHATSAPP_FROM",
     "whatsapp:+14155238886"
 )
+
+def calculate_percentage_change(
+    base_value,
+    comparison_value
+):
+    base_value = float(base_value or 0)
+    comparison_value = float(
+        comparison_value or 0
+    )
+
+    if base_value == 0:
+        if comparison_value == 0:
+            return 0.0
+
+        return None
+
+    return (
+        (comparison_value - base_value)
+        / abs(base_value)
+    ) * 100
+
+
+def format_change_message(
+    label,
+    base_value,
+    comparison_value,
+    base_month_name,
+    comparison_month_name,
+    currency=True,
+):
+    base_value = float(base_value or 0)
+    comparison_value = float(
+        comparison_value or 0
+    )
+
+    difference = comparison_value - base_value
+
+    percentage = calculate_percentage_change(
+        base_value,
+        comparison_value
+    )
+
+    amount_prefix = "₹" if currency else ""
+
+    if base_value == 0 and comparison_value > 0:
+        return (
+            f"**{label}: New in {comparison_month_name}.** "
+            f"{comparison_month_name}: "
+            f"{amount_prefix}{comparison_value:,.2f}."
+        )
+
+    if base_value > 0 and comparison_value == 0:
+        return (
+            f"**{label}: No record in "
+            f"{comparison_month_name}.** "
+            f"{base_month_name}: "
+            f"{amount_prefix}{base_value:,.2f}."
+        )
+
+    if percentage is None:
+        return (
+            f"**{label}:** "
+            f"{comparison_month_name}: "
+            f"{amount_prefix}{comparison_value:,.2f}."
+        )
+
+    if percentage > 0:
+        direction = "increased"
+    elif percentage < 0:
+        direction = "decreased"
+    else:
+        direction = "did not change"
+
+    if percentage == 0:
+        return (
+            f"**{label} did not change.** "
+            f"Both months: "
+            f"{amount_prefix}{comparison_value:,.2f}."
+        )
+
+    return (
+        f"**{label} {direction} by "
+        f"{abs(percentage):,.1f}%.** "
+        f"{base_month_name}: "
+        f"{amount_prefix}{base_value:,.2f} → "
+        f"{comparison_month_name}: "
+        f"{amount_prefix}{comparison_value:,.2f} "
+        f"({amount_prefix}{difference:+,.2f})."
+    )
+
+
+def month_has_data(row):
+    return any([
+        float(row.get("total_income", 0) or 0) != 0,
+        float(row.get("expense", 0) or 0) != 0,
+        int(row.get("bill_count", 0) or 0) != 0,
+    ])
 
 def mobile_table_html(df):
     return df.to_html(index=False, escape=False)
@@ -1050,6 +1186,7 @@ with st.sidebar:
         [
             "📊 Dashboard",
             "📁 Folder View",
+            "📈 Month-over-Month Analysis",
             "⚙️ Settings",
             "🗑️ Recently Deleted",
             "🎓 Training",
@@ -2134,6 +2271,796 @@ elif screen == "📁 Folder View":
 
                         st.divider()
 
+elif screen == "📈 Month-over-Month Analysis":
+
+    st.subheader("📈 Month-over-Month Analysis")
+
+    st.caption(
+        "Review every month in a selected year and compare "
+        "any two months."
+    )
+
+    current_year = date.today().year
+
+    available_years = list(
+        range(current_year, current_year - 6, -1)
+    )
+
+    selected_year = st.selectbox(
+        "Year",
+        available_years,
+        index=0,
+        key="mom_selected_year",
+    )
+
+    monthly_df = cached_monthly_analysis(
+        phone,
+        selected_year
+    )
+
+    if monthly_df.empty:
+        st.warning(
+            "Monthly analysis could not be loaded."
+        )
+        st.stop()
+
+    numeric_columns = [
+        "expense",
+        "entries_income",
+        "manual_income",
+        "petpooja_income",
+        "total_income",
+        "net",
+        "bill_count",
+    ]
+
+    for column in numeric_columns:
+        if column in monthly_df.columns:
+            monthly_df[column] = pd.to_numeric(
+                monthly_df[column],
+                errors="coerce"
+            ).fillna(0)
+
+    monthly_df["month_name"] = monthly_df[
+        "month_number"
+    ].apply(
+        lambda value: calendar.month_abbr[
+            int(value)
+        ]
+    )
+
+    monthly_df["month_full_name"] = monthly_df[
+        "month_number"
+    ].apply(
+        lambda value: calendar.month_name[
+            int(value)
+        ]
+    )
+
+    hide_empty_months = st.checkbox(
+        "Hide months without data",
+        value=True,
+        key="mom_hide_empty_months",
+    )
+
+    if hide_empty_months:
+        displayed_months_df = monthly_df[
+            monthly_df.apply(
+                month_has_data,
+                axis=1
+            )
+        ].copy()
+    else:
+        displayed_months_df = monthly_df.copy()
+
+    st.markdown(
+        f"### Monthly Overview — {selected_year}"
+    )
+
+    if displayed_months_df.empty:
+        st.info(
+            f"No financial data was found for "
+            f"{selected_year}."
+        )
+
+    else:
+        monthly_rows = displayed_months_df.to_dict(
+            "records"
+        )
+
+        for start_index in range(
+            0,
+            len(monthly_rows),
+            4
+        ):
+            month_columns = st.columns(4)
+
+            current_group = monthly_rows[
+                start_index:start_index + 4
+            ]
+
+            for column, month_row in zip(
+                month_columns,
+                current_group
+            ):
+                month_number = int(
+                    month_row["month_number"]
+                )
+
+                month_name = calendar.month_name[
+                    month_number
+                ]
+
+                total_income_value = float(
+                    month_row.get(
+                        "total_income",
+                        0
+                    )
+                )
+
+                expense_value = float(
+                    month_row.get(
+                        "expense",
+                        0
+                    )
+                )
+
+                net_value = float(
+                    month_row.get(
+                        "net",
+                        0
+                    )
+                )
+
+                bill_count = int(
+                    month_row.get(
+                        "bill_count",
+                        0
+                    )
+                )
+
+                with column:
+                    with st.container(border=True):
+                        st.markdown(
+                            f"#### {month_name} "
+                            f"{selected_year}"
+                        )
+
+                        st.markdown(
+                            f"**Income**  \n"
+                            f"₹{total_income_value:,.2f}"
+                        )
+
+                        st.markdown(
+                            f"**Expense**  \n"
+                            f"₹{expense_value:,.2f}"
+                        )
+
+                        st.markdown(
+                            f"**Net**  \n"
+                            f"₹{net_value:,.2f}"
+                        )
+
+                        st.caption(
+                            f"{bill_count:,} expense "
+                            f"bill(s)"
+                        )
+
+                        with st.expander(
+                            "📁 View expense folders"
+                        ):
+                            breakdown_df = (
+                                cached_month_expense_breakdown(
+                                    phone=phone,
+                                    year=selected_year,
+                                    month=month_number,
+                                )
+                            )
+
+                            if breakdown_df.empty:
+                                st.caption(
+                                    "No expense folders "
+                                    "for this month."
+                                )
+
+                            else:
+                                breakdown_df["amount"] = (
+                                    pd.to_numeric(
+                                        breakdown_df[
+                                            "amount"
+                                        ],
+                                        errors="coerce"
+                                    ).fillna(0)
+                                )
+
+                                breakdown_df[
+                                    "bill_count"
+                                ] = pd.to_numeric(
+                                    breakdown_df[
+                                        "bill_count"
+                                    ],
+                                    errors="coerce"
+                                ).fillna(0).astype(int)
+
+                                for _, category_row in (
+                                    breakdown_df.iterrows()
+                                ):
+                                    st.markdown(
+                                        f"📁 **"
+                                        f"{category_row['category']}"
+                                        f"**  \n"
+                                        f"₹"
+                                        f"{category_row['amount']:,.2f}"
+                                        f" · "
+                                        f"{category_row['bill_count']}"
+                                        f" bill(s)"
+                                    )
+
+    st.divider()
+    st.markdown("### Compare Months")
+
+    months_with_data = monthly_df[
+        monthly_df.apply(
+            month_has_data,
+            axis=1
+        )
+    ].copy()
+
+    if len(months_with_data) < 2:
+        st.info(
+            "At least two months with financial data "
+            "are required for comparison."
+        )
+
+    else:
+        month_options = {
+            (
+                f"{calendar.month_name[int(row['month_number'])]} "
+                f"{selected_year}"
+            ): int(row["month_number"])
+            for _, row in months_with_data.iterrows()
+        }
+
+        month_labels = list(month_options.keys())
+
+        default_base_index = max(
+            0,
+            len(month_labels) - 2
+        )
+
+        default_comparison_index = (
+            len(month_labels) - 1
+        )
+
+        compare_col1, compare_col2, compare_col3 = (
+            st.columns([2, 2, 1])
+        )
+
+        with compare_col1:
+            base_month_label = st.selectbox(
+                "Base Month",
+                month_labels,
+                index=default_base_index,
+                key="mom_base_month",
+            )
+
+        with compare_col2:
+            comparison_month_label = st.selectbox(
+                "Compare With",
+                month_labels,
+                index=default_comparison_index,
+                key="mom_comparison_month",
+            )
+
+        with compare_col3:
+            st.write("")
+            st.write("")
+
+            run_comparison = st.button(
+                "Run Comparison",
+                type="primary",
+                use_container_width=True,
+                key="mom_run_comparison",
+            )
+
+        base_month = month_options[
+            base_month_label
+        ]
+
+        comparison_month = month_options[
+            comparison_month_label
+        ]
+
+        if run_comparison:
+            st.session_state[
+                "mom_active_comparison"
+            ] = {
+                "year": selected_year,
+                "base_month": base_month,
+                "comparison_month": comparison_month,
+            }
+
+        active_comparison = st.session_state.get(
+            "mom_active_comparison"
+        )
+
+        if (
+            active_comparison
+            and active_comparison.get("year")
+                == selected_year
+        ):
+            active_base_month = int(
+                active_comparison["base_month"]
+            )
+
+            active_comparison_month = int(
+                active_comparison[
+                    "comparison_month"
+                ]
+            )
+
+            if (
+                active_base_month
+                == active_comparison_month
+            ):
+                st.warning(
+                    "Select two different months."
+                )
+
+            else:
+                base_row = monthly_df[
+                    monthly_df["month_number"]
+                    == active_base_month
+                ].iloc[0]
+
+                comparison_row = monthly_df[
+                    monthly_df["month_number"]
+                    == active_comparison_month
+                ].iloc[0]
+
+                base_month_name = (
+                    calendar.month_name[
+                        active_base_month
+                    ]
+                )
+
+                comparison_month_name = (
+                    calendar.month_name[
+                        active_comparison_month
+                    ]
+                )
+
+                st.caption(
+                    f"Comparing {base_month_name} "
+                    f"{selected_year} with "
+                    f"{comparison_month_name} "
+                    f"{selected_year}."
+                )
+
+                income_change = (
+                    calculate_percentage_change(
+                        base_row["total_income"],
+                        comparison_row[
+                            "total_income"
+                        ],
+                    )
+                )
+
+                expense_change = (
+                    calculate_percentage_change(
+                        base_row["expense"],
+                        comparison_row["expense"],
+                    )
+                )
+
+                net_change = (
+                    calculate_percentage_change(
+                        base_row["net"],
+                        comparison_row["net"],
+                    )
+                )
+
+                bills_change = (
+                    calculate_percentage_change(
+                        base_row["bill_count"],
+                        comparison_row[
+                            "bill_count"
+                        ],
+                    )
+                )
+
+                st.markdown(
+                    "### ✨ AI Comparison Summary"
+                )
+
+                summary_col1, summary_col2, \
+                    summary_col3, summary_col4 = (
+                        st.columns(4)
+                    )
+
+                def show_comparison_metric(
+                    column,
+                    title,
+                    current_value,
+                    change,
+                    prefix="₹",
+                ):
+                    with column:
+                        if change is None:
+                            delta_text = "New"
+                        else:
+                            delta_text = (
+                                f"{change:+.1f}%"
+                            )
+
+                        st.metric(
+                            title,
+                            (
+                                f"{prefix}"
+                                f"{current_value:,.2f}"
+                            ),
+                            delta=delta_text,
+                        )
+
+                show_comparison_metric(
+                    summary_col1,
+                    "Income",
+                    float(
+                        comparison_row[
+                            "total_income"
+                        ]
+                    ),
+                    income_change,
+                )
+
+                show_comparison_metric(
+                    summary_col2,
+                    "Expenses",
+                    float(
+                        comparison_row["expense"]
+                    ),
+                    expense_change,
+                )
+
+                show_comparison_metric(
+                    summary_col3,
+                    "Net",
+                    float(comparison_row["net"]),
+                    net_change,
+                )
+
+                show_comparison_metric(
+                    summary_col4,
+                    "Bills",
+                    float(
+                        comparison_row[
+                            "bill_count"
+                        ]
+                    ),
+                    bills_change,
+                    prefix="",
+                )
+
+                category_comparison_df = (
+                    cached_month_category_comparison(
+                        phone=phone,
+                        year=selected_year,
+                        base_month=active_base_month,
+                        comparison_month=(
+                            active_comparison_month
+                        ),
+                    )
+                )
+
+                st.markdown(
+                    "### AI Detailed Insights"
+                )
+
+                insight_col1, insight_col2, \
+                    insight_col3 = st.columns(3)
+
+                with insight_col1:
+                    with st.container(border=True):
+                        st.markdown(
+                            "#### Top Expense Changes"
+                        )
+
+                        if (
+                            category_comparison_df.empty
+                        ):
+                            st.caption(
+                                "No category comparison "
+                                "is available."
+                            )
+
+                        else:
+                            change_rows = []
+
+                            for _, category_row in (
+                                category_comparison_df
+                                .iterrows()
+                            ):
+                                base_amount = float(
+                                    category_row.get(
+                                        "base_amount",
+                                        0
+                                    )
+                                    or 0
+                                )
+
+                                compare_amount = float(
+                                    category_row.get(
+                                        "comparison_amount",
+                                        0
+                                    )
+                                    or 0
+                                )
+
+                                percentage = (
+                                    calculate_percentage_change(
+                                        base_amount,
+                                        compare_amount,
+                                    )
+                                )
+
+                                if (
+                                    base_amount > 0
+                                    and compare_amount > 0
+                                    and percentage
+                                        is not None
+                                ):
+                                    change_rows.append({
+                                        "category": (
+                                            category_row[
+                                                "category"
+                                            ]
+                                        ),
+                                        "base": base_amount,
+                                        "comparison": (
+                                            compare_amount
+                                        ),
+                                        "change": (
+                                            percentage
+                                        ),
+                                        "absolute_change": (
+                                            abs(percentage)
+                                        ),
+                                    })
+
+                            change_rows = sorted(
+                                change_rows,
+                                key=lambda item: (
+                                    item[
+                                        "absolute_change"
+                                    ]
+                                ),
+                                reverse=True,
+                            )[:6]
+
+                            if not change_rows:
+                                st.caption(
+                                    "No comparable expense "
+                                    "categories were found."
+                                )
+
+                            for change_row in change_rows:
+                                direction_icon = (
+                                    "🔺"
+                                    if change_row[
+                                        "change"
+                                    ] > 0
+                                    else "🔻"
+                                )
+
+                                st.markdown(
+                                    f"{direction_icon} **"
+                                    f"{change_row['category']}"
+                                    f"**  \n"
+                                    f"₹"
+                                    f"{change_row['base']:,.2f}"
+                                    f" → ₹"
+                                    f"{change_row['comparison']:,.2f}"
+                                    f"  \n"
+                                    f"{change_row['change']:+.1f}%"
+                                )
+
+                with insight_col2:
+                    with st.container(border=True):
+                        st.markdown(
+                            "#### New / Missing Expenses"
+                        )
+
+                        if (
+                            category_comparison_df.empty
+                        ):
+                            st.caption(
+                                "No missing-expense "
+                                "information is available."
+                            )
+
+                        else:
+                            missing_messages = []
+
+                            for _, category_row in (
+                                category_comparison_df
+                                .iterrows()
+                            ):
+                                category_name = str(
+                                    category_row.get(
+                                        "category",
+                                        "Uncategorized"
+                                    )
+                                )
+
+                                base_amount = float(
+                                    category_row.get(
+                                        "base_amount",
+                                        0
+                                    )
+                                    or 0
+                                )
+
+                                comparison_amount = float(
+                                    category_row.get(
+                                        "comparison_amount",
+                                        0
+                                    )
+                                    or 0
+                                )
+
+                                if (
+                                    base_amount > 0
+                                    and comparison_amount
+                                        == 0
+                                ):
+                                    missing_messages.append(
+                                        (
+                                            "⚠️ No "
+                                            f"**{category_name}** "
+                                            "bill was recorded in "
+                                            f"{comparison_month_name}. "
+                                            f"{base_month_name}: "
+                                            f"₹{base_amount:,.2f}."
+                                        )
+                                    )
+
+                                elif (
+                                    base_amount == 0
+                                    and comparison_amount > 0
+                                ):
+                                    missing_messages.append(
+                                        (
+                                            "➕ **"
+                                            f"{category_name}"
+                                            "** appeared in "
+                                            f"{comparison_month_name}. "
+                                            f"Amount: "
+                                            f"₹"
+                                            f"{comparison_amount:,.2f}."
+                                        )
+                                    )
+
+                            if not missing_messages:
+                                st.success(
+                                    "No new or missing "
+                                    "expense categories."
+                                )
+
+                            for message in (
+                                missing_messages[:8]
+                            ):
+                                st.markdown(message)
+
+                with insight_col3:
+                    with st.container(border=True):
+                        st.markdown(
+                            "#### Key Observations"
+                        )
+
+                        observations = []
+
+                        base_income = float(
+                            base_row["total_income"]
+                        )
+
+                        comparison_income = float(
+                            comparison_row[
+                                "total_income"
+                            ]
+                        )
+
+                        base_expense = float(
+                            base_row["expense"]
+                        )
+
+                        comparison_expense = float(
+                            comparison_row[
+                                "expense"
+                            ]
+                        )
+
+                        base_net = float(
+                            base_row["net"]
+                        )
+
+                        comparison_net = float(
+                            comparison_row["net"]
+                        )
+
+                        base_bills = int(
+                            base_row["bill_count"]
+                        )
+
+                        comparison_bills = int(
+                            comparison_row[
+                                "bill_count"
+                            ]
+                        )
+
+                        if (
+                            comparison_income
+                                > base_income
+                            and comparison_expense
+                                < base_expense
+                        ):
+                            observations.append(
+                                "✅ Income increased while "
+                                "expenses decreased."
+                            )
+
+                        if comparison_net > base_net:
+                            observations.append(
+                                "✅ Net improved from "
+                                f"{base_month_name} to "
+                                f"{comparison_month_name}."
+                            )
+                        elif comparison_net < base_net:
+                            observations.append(
+                                "⚠️ Net declined from "
+                                f"{base_month_name} to "
+                                f"{comparison_month_name}."
+                            )
+
+                        if (
+                            comparison_bills < base_bills
+                            and comparison_expense
+                                > base_expense
+                        ):
+                            observations.append(
+                                "⚠️ Fewer bills were "
+                                "recorded, but total expense "
+                                "increased. Average bill size "
+                                "was higher."
+                            )
+
+                        if (
+                            comparison_income
+                                > base_income
+                            and comparison_net
+                                <= base_net
+                        ):
+                            observations.append(
+                                "⚠️ Income increased, but "
+                                "net did not improve because "
+                                "expenses also increased."
+                            )
+
+                        if not observations:
+                            observations.append(
+                                "ℹ️ Performance was broadly "
+                                "stable between the selected "
+                                "months."
+                            )
+
+                        for observation in observations:
+                            st.markdown(observation)
+
+                st.caption(
+                    "Percentages are calculated from your "
+                    "stored financial data. A missing bill "
+                    "may mean that the bill was not uploaded."
+                )
+                
 elif screen == "🗑️ Recently Deleted":
     st.subheader("🗑️ Recently Deleted")
     st.caption(

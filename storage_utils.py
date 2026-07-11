@@ -1676,3 +1676,542 @@ def get_manual_income_total_for_user(
 
     return float(row.total or 0)
 
+def _safe_numeric_sql(column_expression):
+    """
+    Converts text values such as:
+    ₹1,250.00
+    1,250
+    1250
+
+    into PostgreSQL numeric values.
+    """
+    return f"""
+        COALESCE(
+            NULLIF(
+                REGEXP_REPLACE(
+                    COALESCE(CAST({column_expression} AS TEXT), ''),
+                    '[^0-9.-]',
+                    '',
+                    'g'
+                ),
+                ''
+            ),
+            '0'
+        )::numeric
+    """
+
+
+def _safe_text_date_sql(column_expression):
+    """
+    Supports:
+    YYYY-MM-DD
+    DD/MM/YYYY
+    DD-MM-YYYY
+    """
+    return f"""
+        CASE
+            WHEN CAST({column_expression} AS TEXT)
+                ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$'
+            THEN CAST({column_expression} AS DATE)
+
+            WHEN CAST({column_expression} AS TEXT)
+                ~ '^\\d{{1,2}}/\\d{{1,2}}/\\d{{4}}$'
+            THEN TO_DATE(
+                CAST({column_expression} AS TEXT),
+                'DD/MM/YYYY'
+            )
+
+            WHEN CAST({column_expression} AS TEXT)
+                ~ '^\\d{{1,2}}-\\d{{1,2}}-\\d{{4}}$'
+            THEN TO_DATE(
+                CAST({column_expression} AS TEXT),
+                'DD-MM-YYYY'
+            )
+
+            ELSE NULL
+        END
+    """
+
+def get_monthly_analysis_for_user(phone, year):
+    """
+    Returns all 12 months for the selected year.
+
+    Income:
+    - Existing income records in entries
+    - Petpooja sales
+    - Manual income_entries
+
+    Expenses:
+    - Active expense rows in entries
+    """
+    if engine is None:
+        return pd.DataFrame()
+
+    phone_clean = clean_phone(phone)
+    selected_year = int(year)
+
+    entries_date_sql = _safe_text_date_sql("date")
+    entries_total_sql = _safe_numeric_sql("total")
+
+    income_date_sql = _safe_text_date_sql("income_date")
+
+    inspector = inspect(engine)
+
+    petpooja_columns = set()
+
+    if inspector.has_table("petpooja_entries"):
+        petpooja_columns = {
+            column["name"]
+            for column in inspector.get_columns("petpooja_entries")
+        }
+
+    petpooja_date_expressions = []
+
+    if "Date" in petpooja_columns:
+        petpooja_date_expressions.append(
+            _safe_text_date_sql('"Date"')
+        )
+
+    if "date" in petpooja_columns:
+        petpooja_date_expressions.append(
+            _safe_text_date_sql('"date"')
+        )
+
+    if petpooja_date_expressions:
+        petpooja_date_sql = (
+            "COALESCE("
+            + ", ".join(petpooja_date_expressions)
+            + ")"
+        )
+    else:
+        petpooja_date_sql = "NULL::date"
+
+    petpooja_total_expressions = []
+
+    for column_name in [
+        "total",
+        "Total",
+        "my_amount",
+        "My Amount",
+        "petpooja_total",
+    ]:
+        if column_name in petpooja_columns:
+            safe_name = column_name.replace('"', '""')
+
+            petpooja_total_expressions.append(
+                f'NULLIF({_safe_numeric_sql(f"""\"{safe_name}\"""")}, 0)'
+            )
+
+    if petpooja_total_expressions:
+        petpooja_total_sql = (
+            "COALESCE("
+            + ", ".join(petpooja_total_expressions)
+            + ", 0)"
+        )
+    else:
+        petpooja_total_sql = "0::numeric"
+
+    query = text(f"""
+        WITH months AS (
+            SELECT
+                month_number,
+                MAKE_DATE(
+                    :selected_year,
+                    month_number,
+                    1
+                ) AS month_start
+            FROM GENERATE_SERIES(1, 12) AS month_number
+        ),
+
+        expense_data AS (
+            SELECT
+                EXTRACT(
+                    MONTH FROM {entries_date_sql}
+                )::INTEGER AS month_number,
+
+                SUM({entries_total_sql}) AS expense,
+
+                COUNT(*) AS bill_count
+            FROM entries
+            WHERE user_phone = :user_phone
+              AND LOWER(COALESCE(transaction_type, 'expense'))
+                  = 'expense'
+              AND LOWER(COALESCE(is_deleted, 'no'))
+                  NOT IN ('yes', 'true', '1')
+              AND EXTRACT(
+                    YEAR FROM {entries_date_sql}
+                  ) = :selected_year
+            GROUP BY 1
+        ),
+
+        entries_income_data AS (
+            SELECT
+                EXTRACT(
+                    MONTH FROM {entries_date_sql}
+                )::INTEGER AS month_number,
+
+                SUM({entries_total_sql}) AS entries_income
+            FROM entries
+            WHERE user_phone = :user_phone
+              AND LOWER(COALESCE(transaction_type, ''))
+                  = 'income'
+              AND LOWER(COALESCE(is_deleted, 'no'))
+                  NOT IN ('yes', 'true', '1')
+              AND EXTRACT(
+                    YEAR FROM {entries_date_sql}
+                  ) = :selected_year
+            GROUP BY 1
+        ),
+
+        manual_income_data AS (
+            SELECT
+                EXTRACT(
+                    MONTH FROM {income_date_sql}
+                )::INTEGER AS month_number,
+
+                SUM(amount) AS manual_income
+            FROM income_entries
+            WHERE user_phone = :user_phone
+              AND EXTRACT(
+                    YEAR FROM {income_date_sql}
+                  ) = :selected_year
+            GROUP BY 1
+        ),
+
+        petpooja_income_data AS (
+            SELECT
+                EXTRACT(
+                    MONTH FROM {petpooja_date_sql}
+                )::INTEGER AS month_number,
+
+                SUM({petpooja_total_sql}) AS petpooja_income
+            FROM petpooja_entries
+            WHERE user_phone = :user_phone
+              AND EXTRACT(
+                    YEAR FROM {petpooja_date_sql}
+                  ) = :selected_year
+            GROUP BY 1
+        )
+
+        SELECT
+            months.month_number,
+            months.month_start,
+
+            COALESCE(expense_data.expense, 0) AS expense,
+
+            COALESCE(
+                entries_income_data.entries_income,
+                0
+            ) AS entries_income,
+
+            COALESCE(
+                manual_income_data.manual_income,
+                0
+            ) AS manual_income,
+
+            COALESCE(
+                petpooja_income_data.petpooja_income,
+                0
+            ) AS petpooja_income,
+
+            (
+                COALESCE(
+                    entries_income_data.entries_income,
+                    0
+                )
+                +
+                COALESCE(
+                    manual_income_data.manual_income,
+                    0
+                )
+                +
+                COALESCE(
+                    petpooja_income_data.petpooja_income,
+                    0
+                )
+            ) AS total_income,
+
+            (
+                COALESCE(
+                    entries_income_data.entries_income,
+                    0
+                )
+                +
+                COALESCE(
+                    manual_income_data.manual_income,
+                    0
+                )
+                +
+                COALESCE(
+                    petpooja_income_data.petpooja_income,
+                    0
+                )
+                -
+                COALESCE(
+                    expense_data.expense,
+                    0
+                )
+            ) AS net,
+
+            COALESCE(
+                expense_data.bill_count,
+                0
+            ) AS bill_count
+
+        FROM months
+
+        LEFT JOIN expense_data
+            ON expense_data.month_number
+                = months.month_number
+
+        LEFT JOIN entries_income_data
+            ON entries_income_data.month_number
+                = months.month_number
+
+        LEFT JOIN manual_income_data
+            ON manual_income_data.month_number
+                = months.month_number
+
+        LEFT JOIN petpooja_income_data
+            ON petpooja_income_data.month_number
+                = months.month_number
+
+        ORDER BY months.month_number
+    """)
+
+    try:
+        return pd.read_sql(
+            query,
+            engine,
+            params={
+                "user_phone": phone_clean,
+                "selected_year": selected_year,
+            }
+        )
+
+    except Exception as e:
+        print(
+            "MONTHLY ANALYSIS ERROR:",
+            str(e),
+            flush=True
+        )
+        return pd.DataFrame()
+    
+def get_month_expense_breakdown_for_user(
+    phone,
+    year,
+    month
+):
+    if engine is None:
+        return pd.DataFrame()
+
+    entries_date_sql = _safe_text_date_sql("date")
+    entries_total_sql = _safe_numeric_sql("total")
+
+    try:
+        return pd.read_sql(
+            text(f"""
+                SELECT
+                    COALESCE(
+                        NULLIF(TRIM(category), ''),
+                        'Uncategorized'
+                    ) AS category,
+
+                    SUM({entries_total_sql}) AS amount,
+
+                    COUNT(*) AS bill_count
+
+                FROM entries
+
+                WHERE user_phone = :user_phone
+
+                  AND LOWER(
+                        COALESCE(
+                            transaction_type,
+                            'expense'
+                        )
+                      ) = 'expense'
+
+                  AND LOWER(
+                        COALESCE(
+                            is_deleted,
+                            'no'
+                        )
+                      ) NOT IN (
+                        'yes',
+                        'true',
+                        '1'
+                      )
+
+                  AND EXTRACT(
+                        YEAR FROM {entries_date_sql}
+                      ) = :selected_year
+
+                  AND EXTRACT(
+                        MONTH FROM {entries_date_sql}
+                      ) = :selected_month
+
+                GROUP BY 1
+                ORDER BY amount DESC
+            """),
+            engine,
+            params={
+                "user_phone": clean_phone(phone),
+                "selected_year": int(year),
+                "selected_month": int(month),
+            }
+        )
+
+    except Exception as e:
+        print(
+            "MONTH BREAKDOWN ERROR:",
+            str(e),
+            flush=True
+        )
+        return pd.DataFrame()
+    
+def compare_expense_categories_for_user(
+    phone,
+    year,
+    base_month,
+    comparison_month
+):
+    if engine is None:
+        return pd.DataFrame()
+
+    entries_date_sql = _safe_text_date_sql("date")
+    entries_total_sql = _safe_numeric_sql("total")
+
+    try:
+        return pd.read_sql(
+            text(f"""
+                WITH category_totals AS (
+                    SELECT
+                        COALESCE(
+                            NULLIF(TRIM(category), ''),
+                            'Uncategorized'
+                        ) AS category,
+
+                        EXTRACT(
+                            MONTH FROM {entries_date_sql}
+                        )::INTEGER AS month_number,
+
+                        SUM({entries_total_sql}) AS amount,
+
+                        COUNT(*) AS bill_count
+
+                    FROM entries
+
+                    WHERE user_phone = :user_phone
+
+                      AND LOWER(
+                            COALESCE(
+                                transaction_type,
+                                'expense'
+                            )
+                          ) = 'expense'
+
+                      AND LOWER(
+                            COALESCE(
+                                is_deleted,
+                                'no'
+                            )
+                          ) NOT IN (
+                            'yes',
+                            'true',
+                            '1'
+                          )
+
+                      AND EXTRACT(
+                            YEAR FROM {entries_date_sql}
+                          ) = :selected_year
+
+                      AND EXTRACT(
+                            MONTH FROM {entries_date_sql}
+                          ) IN (
+                            :base_month,
+                            :comparison_month
+                          )
+
+                    GROUP BY 1, 2
+                ),
+
+                categories AS (
+                    SELECT DISTINCT category
+                    FROM category_totals
+                )
+
+                SELECT
+                    categories.category,
+
+                    COALESCE(
+                        MAX(amount) FILTER (
+                            WHERE month_number = :base_month
+                        ),
+                        0
+                    ) AS base_amount,
+
+                    COALESCE(
+                        MAX(amount) FILTER (
+                            WHERE month_number
+                                = :comparison_month
+                        ),
+                        0
+                    ) AS comparison_amount,
+
+                    COALESCE(
+                        MAX(bill_count) FILTER (
+                            WHERE month_number = :base_month
+                        ),
+                        0
+                    ) AS base_bill_count,
+
+                    COALESCE(
+                        MAX(bill_count) FILTER (
+                            WHERE month_number
+                                = :comparison_month
+                        ),
+                        0
+                    ) AS comparison_bill_count
+
+                FROM categories
+                LEFT JOIN category_totals
+                    ON category_totals.category
+                        = categories.category
+
+                GROUP BY categories.category
+
+                ORDER BY GREATEST(
+                    COALESCE(
+                        MAX(amount) FILTER (
+                            WHERE month_number = :base_month
+                        ),
+                        0
+                    ),
+                    COALESCE(
+                        MAX(amount) FILTER (
+                            WHERE month_number
+                                = :comparison_month
+                        ),
+                        0
+                    )
+                ) DESC
+            """),
+            engine,
+            params={
+                "user_phone": clean_phone(phone),
+                "selected_year": int(year),
+                "base_month": int(base_month),
+                "comparison_month": int(
+                    comparison_month
+                ),
+            }
+        )
+
+    except Exception as e:
+        print(
+            "MONTH COMPARISON ERROR:",
+            str(e),
+            flush=True
+        )
+        return pd.DataFrame()
