@@ -1498,6 +1498,9 @@ def get_entry_by_reference(entry_id, owner_phone, include_deleted=False):
     return dict(row) if row else None
 
 def init_income_table():
+    if engine is None:
+        raise RuntimeError("DATABASE_URL is missing.")
+
     with engine.begin() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS income_entries (
@@ -1512,14 +1515,38 @@ def init_income_table():
                 payment_method TEXT,
                 currency TEXT DEFAULT 'INR',
                 source TEXT DEFAULT 'Manual Dashboard',
+                is_deleted TEXT DEFAULT 'no',
+                deleted_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
 
+        # Adds columns safely for the existing table.
+        conn.execute(text("""
+            ALTER TABLE income_entries
+            ADD COLUMN IF NOT EXISTS is_deleted TEXT DEFAULT 'no'
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE income_entries
+            ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE income_entries
+            ADD COLUMN IF NOT EXISTS updated_at
+            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        """))
+
         conn.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_income_entries_user_date
             ON income_entries(user_phone, income_date)
+        """))
+
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_income_entries_deleted
+            ON income_entries(user_phone, is_deleted)
         """))
 
 def append_income_entry(entry):
@@ -1627,6 +1654,8 @@ def load_income_entries_for_user(
                 created_at
             FROM income_entries
             WHERE {where_clause}
+            AND LOWER(COALESCE(is_deleted, 'no'))
+                NOT IN ('yes', 'true', '1')
             ORDER BY income_date::date DESC, id DESC
             LIMIT :limit
         """),
@@ -1670,6 +1699,8 @@ def get_manual_income_total_for_user(
                     COALESCE(SUM(amount), 0) AS total
                 FROM income_entries
                 WHERE {where_clause}
+                AND LOWER(COALESCE(is_deleted, 'no'))
+                    NOT IN ('yes', 'true', '1')
             """),
             params
         ).fetchone()
@@ -2215,3 +2246,96 @@ def compare_expense_categories_for_user(
             flush=True
         )
         return pd.DataFrame()
+    
+def update_income_entry_by_id(
+    entry_id,
+    user_phone,
+    income_date=None,
+    customer_name=None,
+    event_name=None,
+    income_category=None,
+    description=None,
+    amount=None,
+    payment_method=None,
+):
+    if engine is None:
+        return 0
+
+    updates = []
+    params = {
+        "entry_id": str(entry_id),
+        "user_phone": clean_phone(user_phone),
+    }
+
+    if income_date is not None:
+        updates.append("income_date = :income_date")
+        params["income_date"] = normalize_date_ddmmyyyy(income_date)
+
+    if customer_name is not None:
+        updates.append("customer_name = :customer_name")
+        params["customer_name"] = str(customer_name).strip()
+
+    if event_name is not None:
+        updates.append("event_name = :event_name")
+        params["event_name"] = str(event_name).strip()
+
+    if income_category is not None:
+        updates.append("income_category = :income_category")
+        params["income_category"] = str(income_category).strip()
+
+    if description is not None:
+        updates.append("description = :description")
+        params["description"] = str(description).strip()
+
+    if amount is not None:
+        updates.append("amount = :amount")
+        params["amount"] = float(amount)
+
+    if payment_method is not None:
+        updates.append("payment_method = :payment_method")
+        params["payment_method"] = str(payment_method).strip()
+
+    if not updates:
+        return 0
+
+    updates.append("updated_at = CURRENT_TIMESTAMP")
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(f"""
+                UPDATE income_entries
+                SET {", ".join(updates)}
+                WHERE id = :entry_id
+                  AND user_phone = :user_phone
+                  AND LOWER(COALESCE(is_deleted, 'no'))
+                      NOT IN ('yes', 'true', '1')
+            """),
+            params,
+        )
+
+    return result.rowcount
+
+def soft_delete_income_entry(entry_id, user_phone):
+    if engine is None:
+        return 0
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                UPDATE income_entries
+                SET
+                    is_deleted = 'yes',
+                    deleted_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = :entry_id
+                  AND user_phone = :user_phone
+                  AND LOWER(COALESCE(is_deleted, 'no'))
+                      NOT IN ('yes', 'true', '1')
+            """),
+            {
+                "entry_id": str(entry_id),
+                "user_phone": clean_phone(user_phone),
+            },
+        )
+
+    return result.rowcount
