@@ -37,6 +37,9 @@ from storage_utils import (
     engine,
     normalize_date_ddmmyyyy,
     add_financial_todo,
+    get_entry_by_reference,
+    soft_delete_entry,
+    restore_deleted_entry,
 )
 
 from sqlalchemy import text
@@ -304,17 +307,40 @@ def extract_amount(text):
 
 
 def extract_purchase_date(text):
-    text = str(text or "").lower()
+    value = str(text or "").strip().lower()
 
-    if "today" in text:
+    if "today" in value:
         return datetime.now().strftime("%Y-%m-%d")
 
-    if "yesterday" in text:
+    if "yesterday" in value:
         return (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    date_match = re.search(r"\d{4}-\d{2}-\d{2}", text)
-    if date_match:
-        return date_match.group(0)
+    # YYYY-MM-DD
+    iso_match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", value)
+    if iso_match:
+        return iso_match.group(0)
+
+    # DD/MM/YYYY or DD-MM-YYYY
+    local_match = re.search(
+        r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b",
+        value
+    )
+
+    if local_match:
+        day, month, year = local_match.groups()
+
+        if len(year) == 2:
+            year = f"20{year}"
+
+        try:
+            parsed = datetime(
+                int(year),
+                int(month),
+                int(day)
+            )
+            return parsed.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
 
     return datetime.now().strftime("%Y-%m-%d")
 
@@ -338,6 +364,101 @@ def parse_comma_text_expense(text):
         "amount": amount,
         "date": extract_purchase_date(date_text),
         "category": match_category(item) or "Uncategorized"
+    }
+
+def parse_structured_text_expense(text):
+    """
+    Supports messages such as:
+
+    Vendor: Uma Chicken
+    Category: Chicken
+    Amount: 850
+    Date: 05/07/2026
+
+    Also supports:
+    Vendor-Uma Chicken
+    Category-Chicken
+    850
+    Date-05/07/2026
+    """
+
+    raw_text = str(text or "").strip()
+
+    if not raw_text:
+        return None
+
+    lines = [
+        line.strip()
+        for line in raw_text.splitlines()
+        if line.strip()
+    ]
+
+    vendor = ""
+    category = ""
+    amount = None
+    date_value = ""
+
+    for line in lines:
+        vendor_match = re.match(
+            r"^\s*vendor\s*[:\-–—]\s*(.+?)\s*$",
+            line,
+            flags=re.I
+        )
+        if vendor_match:
+            vendor = vendor_match.group(1).strip()
+            continue
+
+        category_match = re.match(
+            r"^\s*category\s*[:\-–—]\s*(.+?)\s*$",
+            line,
+            flags=re.I
+        )
+        if category_match:
+            category = category_match.group(1).strip()
+            continue
+
+        amount_match = re.match(
+            r"^\s*(?:amount|total)\s*[:\-–—]\s*"
+            r"(?:₹|rs\.?|inr)?\s*([\d,]+(?:\.\d+)?)\s*$",
+            line,
+            flags=re.I
+        )
+        if amount_match:
+            amount = float(amount_match.group(1).replace(",", ""))
+            continue
+
+        date_match = re.match(
+            r"^\s*date\s*[:\-–—]\s*(.+?)\s*$",
+            line,
+            flags=re.I
+        )
+        if date_match:
+            date_value = date_match.group(1).strip()
+            continue
+
+        # Allow an amount-only line such as "90"
+        if amount is None and is_amount_only_message(line):
+            amount = extract_amount(line)
+
+    # A complete structured expense requires vendor and amount.
+    if not vendor or amount is None or amount <= 0:
+        return None
+
+    matched_category = (
+        match_category(category)
+        or match_category(vendor)
+        or category
+        or "Uncategorized"
+    )
+
+    return {
+        "intent": "expense_entry",
+        "vendor": vendor.title(),
+        "description": matched_category,
+        "category": matched_category,
+        "amount": float(amount),
+        "date": extract_purchase_date(date_value or "today"),
+        "currency": "INR",
     }
 
 def parse_free_text_expense_with_ai(user_text):
@@ -451,9 +572,13 @@ def is_duplicate_expense(duplicate_key):
                 SELECT id
                 FROM entries
                 WHERE duplicate_key = :duplicate_key
+                  AND LOWER(COALESCE(is_deleted, 'no'))
+                      NOT IN ('yes', 'true', '1')
                 LIMIT 1
             """),
-            {"duplicate_key": str(duplicate_key)}
+            {
+                "duplicate_key": str(duplicate_key)
+            }
         ).fetchone()
 
     return row is not None
@@ -523,21 +648,36 @@ def save_text_expense(intent_data, owner_phone, uploader_phone):
 
     append_entry(entry)
 
-    # Do not let memory/context errors block the saved response
+    saved_entry_id = None
+
+    # Conversation context must never block the saved response.
     try:
-        last_expense = get_last_saved_expense(owner_phone, uploader_phone)
+        last_expense = get_last_saved_expense(
+            owner_phone,
+            uploader_phone
+        )
 
         if last_expense:
-            save_conversation_context(uploader_phone, {
-                "state": "last_expense_saved",
-                "entry_id": str(last_expense.get("id")),
-                "vendor": last_expense.get("vendor", ""),
-                "amount": str(last_expense.get("total", "")),
-                "date": last_expense.get("date", ""),
-                "category": last_expense.get("category", ""),
-            })
+            saved_entry_id = str(last_expense.get("id", "")).strip()
+
+            save_conversation_context(
+                uploader_phone,
+                {
+                    "state": "last_expense_saved",
+                    "entry_id": saved_entry_id,
+                    "vendor": last_expense.get("vendor", ""),
+                    "amount": str(last_expense.get("total", "")),
+                    "date": last_expense.get("date", ""),
+                    "category": last_expense.get("category", ""),
+                }
+            )
+
     except Exception as e:
-        print("CONVERSATION CONTEXT SAVE ERROR:", str(e), flush=True)
+        print(
+            "CONVERSATION CONTEXT SAVE ERROR:",
+            str(e),
+            flush=True
+        )
 
     try:
         update_vendor_memory(
@@ -547,16 +687,35 @@ def save_text_expense(intent_data, owner_phone, uploader_phone):
             folder=folder,
         )
     except Exception as e:
-        print("VENDOR MEMORY UPDATE ERROR:", str(e), flush=True)
+        print(
+            "VENDOR MEMORY UPDATE ERROR:",
+            str(e),
+            flush=True
+        )
 
-    return True, (
-        f"✅ Expense saved\n\n"
-        f"Vendor: {vendor.title()}\n"
-        f"Amount: ₹{amount:,.2f}\n"
-        f"Date: {date_value}\n"
-        f"Category: {category}\n\n"
-        f"Need anything else?"
-    )
+    message_lines = [
+        "✅ Expense saved",
+        "",
+    ]
+
+    if saved_entry_id:
+        message_lines.append(f"Reference: EXP-{saved_entry_id}")
+
+    message_lines.extend([
+        f"Vendor: {vendor.title()}",
+        f"Amount: ₹{amount:,.2f}",
+        f"Date: {date_value}",
+        f"Category: {category}",
+    ])
+
+    if saved_entry_id:
+        message_lines.extend([
+            "",
+            "To delete this record later, send:",
+            f"Delete EXP-{saved_entry_id}",
+        ])
+
+    return True, "\n".join(message_lines)
 
 def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url, media_type):
     lazy_init()
@@ -648,6 +807,26 @@ def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url,
             "duplicate_key": duplicate_key,
         }
 
+        saved_entry_id = None
+
+        try:
+            last_expense = get_last_saved_expense(
+                owner_phone,
+                uploader_phone
+            )
+
+            if last_expense:
+                saved_entry_id = str(
+                    last_expense.get("id", "")
+                ).strip()
+
+        except Exception as e:
+            print(
+                "BILL REFERENCE LOOKUP ERROR:",
+                str(e),
+                flush=True
+            )
+
         if not has_vendor_memory:
             save_pending_entry(uploader_phone, entry)
 
@@ -673,13 +852,32 @@ def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url,
         print(f"SAVE ENTRY: {round(time.time() - save_start, 2)} sec", flush=True)
         print(f"FULL REQUEST TIME: {round(time.time() - request_start, 2)} sec", flush=True)
 
+        message_lines = [
+            "✅ Bill saved",
+            "",
+        ]
+
+        if saved_entry_id:
+            message_lines.append(
+                f"Reference: EXP-{saved_entry_id}"
+            )
+
+        message_lines.extend([
+            f"Vendor: {entry['vendor']}",
+            f"Total: ₹{safe_float(entry['total']):,.2f}",
+            f"Category: {entry['category']}",
+        ])
+
+        if saved_entry_id:
+            message_lines.extend([
+                "",
+                "To delete this record later, send:",
+                f"Delete EXP-{saved_entry_id}",
+            ])
+
         send_whatsapp_message(
             raw_from,
-            f"✅ Bill saved\n\n"
-            f"Vendor: {entry['vendor']}\n"
-            f"Total: ₹{entry['total']}\n"
-            f"Category: {entry['category']}\n\n"
-            f"Need anything else?"
+            "\n".join(message_lines)
         )
 
     except Exception as e:
@@ -926,6 +1124,8 @@ def query_finance_answer(intent_data, owner_phone):
     base_filter = """
         user_phone = :owner_phone
         AND date::date BETWEEN :start_date AND :end_date
+        AND LOWER(COALESCE(is_deleted, 'no'))
+            NOT IN ('yes', 'true', '1')
     """
 
     params = {
@@ -1532,61 +1732,39 @@ def is_edit_message(message):
     ])
 
 
-def handle_conversation_context(raw_from, owner_phone, uploader_phone, incoming_msg):
+def handle_conversation_context(
+    raw_from,
+    owner_phone,
+    uploader_phone,
+    incoming_msg
+):
     msg = str(incoming_msg or "").strip()
-    msg_lower = msg.lower()
-
     context = get_conversation_context(uploader_phone)
 
-    # 1. User previously gave item/vendor without amount
-    if context.get("state") == "awaiting_amount":
-        if is_amount_only_message(msg):
-            amount = extract_amount(msg)
+    # Keep delete confirmation context working.
+    if context.get("state") == "confirm_delete_entry":
+        return False
 
-            intent_data = {
-                "description": context.get("description") or context.get("vendor") or "WhatsApp text expense",
-                "vendor": context.get("vendor") or context.get("description") or "Manual Entry",
-                "category": context.get("category") or "Uncategorized",
-                "amount": amount,
-                "date": context.get("date") or datetime.now().strftime("%Y-%m-%d"),
-                "currency": "INR"
-            }
-
-            success, reply = save_text_expense(intent_data, owner_phone, uploader_phone)
-
-            if success:
-                last_expense = get_last_saved_expense(owner_phone, uploader_phone)
-                if last_expense:
-                    save_conversation_context(uploader_phone, {
-                        "state": "last_expense_saved",
-                        "entry_id": str(last_expense.get("id")),
-                        "vendor": last_expense.get("vendor", ""),
-                        "amount": last_expense.get("total", ""),
-                        "date": last_expense.get("date", ""),
-                        "category": last_expense.get("category", ""),
-                    })
-            else:
-                clear_conversation_context(uploader_phone)
-
-            send_whatsapp_message(raw_from, reply)
-            return True
-
-        send_whatsapp_message(
-            raw_from,
-            "How much did you spend?\n\nExample: 850"
-        )
-        return True
-
-    # 2. User says only date after saving last expense
-    if context.get("state") == "last_expense_saved" and is_date_only_message(msg):
+    # Keep last-expense edits working.
+    if context.get("state") == "last_expense_saved":
         entry_id = context.get("entry_id")
-        new_date = normalize_date_ddmmyyyy(extract_purchase_date(msg))
 
-        if entry_id:
-            update_last_expense_field(entry_id, "date", new_date)
+        if is_date_only_message(msg) and entry_id:
+            new_date = normalize_date_ddmmyyyy(
+                extract_purchase_date(msg)
+            )
+
+            update_last_expense_field(
+                entry_id,
+                "date",
+                new_date
+            )
 
             context["date"] = new_date
-            save_conversation_context(uploader_phone, context)
+            save_conversation_context(
+                uploader_phone,
+                context
+            )
 
             send_whatsapp_message(
                 raw_from,
@@ -1594,87 +1772,259 @@ def handle_conversation_context(raw_from, owner_phone, uploader_phone, incoming_
             )
             return True
 
-    # 3. User says "actually 1500" after saving last expense
-    if context.get("state") == "last_expense_saved" and is_edit_message(msg):
-        entry_id = context.get("entry_id")
-        new_amount = extract_amount(msg)
+        if is_edit_message(msg) and entry_id:
+            new_amount = extract_amount(msg)
 
-        if entry_id and new_amount:
-            update_last_expense_field(entry_id, "total", new_amount)
-            update_last_expense_field(entry_id, "subtotal", new_amount)
+            if new_amount:
+                update_last_expense_field(
+                    entry_id,
+                    "total",
+                    new_amount
+                )
+                update_last_expense_field(
+                    entry_id,
+                    "subtotal",
+                    new_amount
+                )
 
-            context["amount"] = new_amount
-            save_conversation_context(uploader_phone, context)
+                context["amount"] = new_amount
+                save_conversation_context(
+                    uploader_phone,
+                    context
+                )
 
-            send_whatsapp_message(
-                raw_from,
-                f"✅ Updated the last expense amount to ₹{new_amount:,.2f}."
+                send_whatsapp_message(
+                    raw_from,
+                    (
+                        "✅ Updated the last expense "
+                        f"amount to ₹{new_amount:,.2f}."
+                    )
+                )
+                return True
+
+    # Remove old incomplete-entry states.
+    if context.get("state") in {
+        "awaiting_amount",
+        "awaiting_item_for_amount",
+    }:
+        clear_conversation_context(uploader_phone)
+
+    return False
+
+def parse_expense_reference(message):
+    """
+    Accepts:
+    Delete EXP-123
+    delete exp 123
+    Restore EXP-123
+    """
+    match = re.search(
+        r"\bEXP[\s\-_:]*([0-9]+)\b",
+        str(message or ""),
+        flags=re.I
+    )
+
+    if not match:
+        return None
+
+    return match.group(1)
+
+
+def is_delete_request(message):
+    normalized = normalize_chat_text(message)
+
+    return (
+        normalized.startswith("delete ")
+        or normalized.startswith("remove ")
+        or normalized.startswith("delete expense ")
+        or normalized.startswith("remove expense ")
+    )
+
+
+def is_restore_request(message):
+    normalized = normalize_chat_text(message)
+
+    return (
+        normalized.startswith("restore ")
+        or normalized.startswith("recover ")
+    )
+
+
+def is_yes_message(message):
+    normalized = normalize_chat_text(message)
+
+    return normalized in {
+        "yes",
+        "y",
+        "confirm",
+        "yes delete",
+        "delete it",
+        "confirm delete",
+    }
+
+
+def is_no_message(message):
+    normalized = normalize_chat_text(message)
+
+    return normalized in {
+        "no",
+        "n",
+        "cancel",
+        "dont delete",
+        "do not delete",
+    }
+
+def handle_whatsapp_delete_flow(
+    raw_from,
+    owner_phone,
+    uploader_phone,
+    incoming_msg,
+):
+    context = get_conversation_context(uploader_phone)
+
+    # User is confirming a previously requested deletion.
+    if context.get("state") == "confirm_delete_entry":
+        entry_id = str(context.get("entry_id", "")).strip()
+
+        if is_yes_message(incoming_msg):
+            deleted = soft_delete_entry(
+                entry_id=entry_id,
+                owner_phone=owner_phone,
+                deleted_by=uploader_phone,
+                delete_source="whatsapp",
             )
-            return True
 
-        if entry_id and ("yesterday" in msg_lower or "today" in msg_lower or is_date_only_message(msg)):
-            new_date = normalize_date_ddmmyyyy(extract_purchase_date(msg))
-            update_last_expense_field(entry_id, "date", new_date)
-
-            context["date"] = new_date
-            save_conversation_context(uploader_phone, context)
-
-            send_whatsapp_message(
-                raw_from,
-                f"✅ Updated the last expense date to {new_date}."
-            )
-            return True
-
-        send_whatsapp_message(
-            raw_from,
-            "What should I update for the last expense?\n\nExamples:\n• Actually 1500\n• Yesterday\n• Change category to Chicken"
-        )
-        return True
-
-    # 4. User sends only amount without context
-    if is_amount_only_message(msg):
-        send_whatsapp_message(
-            raw_from,
-            "What was this expense for?\n\nExample:\nChicken\nMilk\nVegetables"
-        )
-        save_conversation_context(uploader_phone, {
-            "state": "awaiting_item_for_amount",
-            "amount": extract_amount(msg),
-            "date": datetime.now().strftime("%Y-%m-%d")
-        })
-        return True
-
-    # 5. User first sent amount, now gives item
-    if context.get("state") == "awaiting_item_for_amount":
-        amount = context.get("amount")
-        category = match_category(msg) or "Uncategorized"
-
-        intent_data = {
-            "description": msg.title(),
-            "vendor": msg.title(),
-            "category": category,
-            "amount": amount,
-            "date": context.get("date") or datetime.now().strftime("%Y-%m-%d"),
-            "currency": "INR"
-        }
-
-        success, reply = save_text_expense(intent_data, owner_phone, uploader_phone)
-
-        if success:
-            last_expense = get_last_saved_expense(owner_phone, uploader_phone)
-            if last_expense:
-                save_conversation_context(uploader_phone, {
-                    "state": "last_expense_saved",
-                    "entry_id": str(last_expense.get("id")),
-                    "vendor": last_expense.get("vendor", ""),
-                    "amount": last_expense.get("total", ""),
-                    "date": last_expense.get("date", ""),
-                    "category": last_expense.get("category", ""),
-                })
-        else:
             clear_conversation_context(uploader_phone)
 
-        send_whatsapp_message(raw_from, reply)
+            if deleted:
+                send_whatsapp_message(
+                    raw_from,
+                    (
+                        f"✅ EXP-{entry_id} moved to "
+                        f"Recently Deleted.\n\n"
+                        f"It can be restored from the "
+                        f"FinWise dashboard for 30 days."
+                    )
+                )
+            else:
+                send_whatsapp_message(
+                    raw_from,
+                    (
+                        "I could not delete that record. "
+                        "It may already be deleted or may "
+                        "belong to another account."
+                    )
+                )
+
+            return True
+
+        if is_no_message(incoming_msg):
+            clear_conversation_context(uploader_phone)
+
+            send_whatsapp_message(
+                raw_from,
+                "Deletion cancelled."
+            )
+            return True
+
+        send_whatsapp_message(
+            raw_from,
+            (
+                f"Reply YES to move EXP-{entry_id} "
+                f"to Recently Deleted, or NO to cancel."
+            )
+        )
+        return True
+
+    # New delete request.
+    if is_delete_request(incoming_msg):
+        entry_id = parse_expense_reference(incoming_msg)
+
+        if not entry_id:
+            send_whatsapp_message(
+                raw_from,
+                (
+                    "Please include the expense reference.\n\n"
+                    "Example:\n"
+                    "Delete EXP-10452"
+                )
+            )
+            return True
+
+        entry = get_entry_by_reference(
+            entry_id=entry_id,
+            owner_phone=owner_phone,
+            include_deleted=False,
+        )
+
+        if not entry:
+            send_whatsapp_message(
+                raw_from,
+                (
+                    f"I couldn't find active record "
+                    f"EXP-{entry_id} in this account."
+                )
+            )
+            return True
+
+        save_conversation_context(
+            uploader_phone,
+            {
+                "state": "confirm_delete_entry",
+                "entry_id": str(entry_id),
+                "vendor": entry.get("vendor", ""),
+                "description": entry.get("description", ""),
+                "category": entry.get("category", ""),
+                "amount": entry.get("total", 0),
+                "date": entry.get("date", ""),
+            }
+        )
+
+        send_whatsapp_message(
+            raw_from,
+            (
+                "⚠️ Confirm deletion\n\n"
+                f"Reference: EXP-{entry_id}\n"
+                f"Vendor: {entry.get('vendor', '')}\n"
+                f"Category: {entry.get('category', '')}\n"
+                f"Amount: ₹{safe_float(entry.get('total')):,.2f}\n"
+                f"Date: {entry.get('date', '')}\n\n"
+                "Reply YES to move it to Recently Deleted.\n"
+                "Reply NO to cancel."
+            )
+        )
+        return True
+
+    # Optional restore through WhatsApp.
+    if is_restore_request(incoming_msg):
+        entry_id = parse_expense_reference(incoming_msg)
+
+        if not entry_id:
+            send_whatsapp_message(
+                raw_from,
+                "Example: Restore EXP-10452"
+            )
+            return True
+
+        restored = restore_deleted_entry(
+            entry_id=entry_id,
+            owner_phone=owner_phone,
+        )
+
+        if restored:
+            send_whatsapp_message(
+                raw_from,
+                f"♻️ EXP-{entry_id} restored successfully."
+            )
+        else:
+            send_whatsapp_message(
+                raw_from,
+                (
+                    f"I couldn't restore EXP-{entry_id}. "
+                    "It may not be in Recently Deleted."
+                )
+            )
+
         return True
 
     return False
@@ -1697,13 +2047,40 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
         if is_thanks_message(incoming_msg):
             send_whatsapp_message(raw_from, get_thanks_reply())
             return
+        
+        delete_handled = handle_whatsapp_delete_flow(
+            raw_from=raw_from,
+            owner_phone=owner_phone,
+            uploader_phone=uploader_phone,
+            incoming_msg=incoming_msg,
+        )
+
+        if delete_handled:
+            return
 
         pending_entry = get_pending_entry(uploader_phone)
 
-            
+        # A full structured template must override stale conversation state.
+        structured_expense = parse_structured_text_expense(incoming_msg)
+
+        if structured_expense:
+            clear_conversation_context(uploader_phone)
+
+            success, message = save_text_expense(
+                structured_expense,
+                owner_phone,
+                uploader_phone
+            )
+
+            send_whatsapp_message(raw_from, message)
+            return
+
+
         comma_expense = parse_comma_text_expense(incoming_msg)
 
         if comma_expense:
+            clear_conversation_context(uploader_phone)
+
             intent_data = {
                 "intent": "expense_entry",
                 "vendor": comma_expense["vendor"],
@@ -1714,7 +2091,12 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
                 "currency": "INR",
             }
 
-            success, message = save_text_expense(intent_data, owner_phone, uploader_phone)
+            success, message = save_text_expense(
+                intent_data,
+                owner_phone,
+                uploader_phone
+            )
+
             send_whatsapp_message(raw_from, message)
             return
 
@@ -1768,65 +2150,54 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
 
             clear_pending_category(uploader_phone)
 
+            saved_entry_id = None
+
+            try:
+                last_expense = get_last_saved_expense(
+                    owner_phone,
+                    uploader_phone
+                )
+
+                if last_expense:
+                    saved_entry_id = str(
+                        last_expense.get("id", "")
+                    ).strip()
+
+            except Exception as e:
+                print(
+                    "PENDING BILL REFERENCE ERROR:",
+                    str(e),
+                    flush=True
+                )
+
+            message_lines = [
+                "✅ Bill saved",
+                "",
+            ]
+
+            if saved_entry_id:
+                message_lines.append(
+                    f"Reference: EXP-{saved_entry_id}"
+                )
+
+            message_lines.extend([
+                f"Vendor: {pending_entry.get('vendor', '')}",
+                f"Total: ₹{safe_float(pending_entry.get('total')):,.2f}",
+                f"Category: {category}",
+            ])
+
+            if saved_entry_id:
+                message_lines.extend([
+                    "",
+                    "To delete this record later, send:",
+                    f"Delete EXP-{saved_entry_id}",
+                ])
+
             send_whatsapp_message(
                 raw_from,
-                f"Saved bill ✅\n"
-                f"Vendor: {pending_entry.get('vendor', '')}\n"
-                f"Total: ₹{pending_entry.get('total', '')}\n"
-                f"Category saved as: {category}"
+                "\n".join(message_lines)
             )
             return
-        
-        if is_todo_message(incoming_msg):
-            todo = parse_todo_message(incoming_msg)
-
-            if not todo["title"]:
-                send_whatsapp_message(
-                    raw_from,
-                    "Please send your to-do like this:\n\nto do\norder chicken 5 kg"
-                )
-                return
-
-            add_financial_todo(
-                owner_phone=owner_phone,
-                title=todo["title"],
-                todo_type=todo["todo_type"],
-                due_date=todo["due_date"],
-                amount=todo["amount"],
-                notes=todo["notes"],
-            )
-
-            reply = f"To-do saved ✅\n\nTask: {todo['title']}\nType: {todo['todo_type']}"
-
-            if todo["due_date"]:
-                reply += f"\nDue: {todo['due_date']}"
-
-            if todo["amount"]:
-                reply += f"\nAmount: ₹{todo['amount']}"
-
-            send_whatsapp_message(raw_from, reply)
-            return
-
-        if intent == "expense_entry":
-            amount = intent_data.get("amount")
-
-            if not amount or float(amount or 0) <= 0:
-                vendor = intent_data.get("vendor") or intent_data.get("description") or incoming_msg
-                category = intent_data.get("category") or match_category(incoming_msg) or "Uncategorized"
-
-                save_conversation_context(uploader_phone, {
-                    "state": "awaiting_amount",
-                    "vendor": vendor,
-                    "description": intent_data.get("description") or incoming_msg,
-                    "category": category,
-                    "date": intent_data.get("date") or datetime.now().strftime("%Y-%m-%d"),
-                })
-
-                send_whatsapp_message(
-                    raw_from,
-                    f"How much did you spend for {vendor}?"
-                )
-                return
 
             success, message = save_text_expense(intent_data, owner_phone, uploader_phone)
             send_whatsapp_message(raw_from, message)
@@ -1878,18 +2249,18 @@ def whatsapp():
     print("Media count:", num_media, flush=True)
 
     # Simple messages should NOT touch RDS
-    
-    if is_greeting_message(incoming_msg):
-        response.message(get_greeting_reply())
-        return str(response)
+    if num_media == 0:
+        if is_greeting_message(incoming_msg):
+            response.message(get_greeting_reply())
+            return str(response)
 
-    if is_help_message(incoming_msg):
-        response.message(get_help_reply())
-        return str(response)
+        if is_help_message(incoming_msg):
+            response.message(get_help_reply())
+            return str(response)
 
-    if is_thanks_message(incoming_msg):
-        response.message(get_thanks_reply())
-        return str(response)
+        if is_thanks_message(incoming_msg):
+            response.message(get_thanks_reply())
+            return str(response)
 
     # Only initialize DB/OpenAI/Twilio after simple replies
     lazy_init()

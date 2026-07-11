@@ -45,7 +45,12 @@ from storage_utils import (
     delete_user_category,
     load_petpooja_entries_for_user,
     get_dashboard_totals_for_user,
-    get_petpooja_total_for_user
+    get_petpooja_total_for_user,
+    soft_delete_entries_by_ids,
+    load_recently_deleted_entries,
+    restore_deleted_entry,
+    permanently_delete_entry,
+    purge_expired_deleted_entries,
 )
 
 load_dotenv()
@@ -295,7 +300,10 @@ def metric_card(label, value, icon, bg, color):
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+15559208533")
+TWILIO_WHATSAPP_FROM = os.getenv(
+    "TWILIO_WHATSAPP_FROM",
+    "whatsapp:+14155238886"
+)
 
 def mobile_table_html(df):
     return df.to_html(index=False, escape=False)
@@ -1009,6 +1017,7 @@ with st.sidebar:
             "📊 Dashboard",
             "📁 Folder View",
             "⚙️ Settings",
+            "🗑️ Recently Deleted",
             "🎓 Training",
         ],
         label_visibility="collapsed",
@@ -1419,14 +1428,29 @@ if screen == "📊 Dashboard":
             return updated_count
 
         def delete_selected_expenses(edited_data, original_df, phone):
-            selected_rows = edited_data[edited_data["Delete?"] == True]
+            if edited_data.empty or "Delete?" not in edited_data.columns:
+                return 0
+
+            selected_rows = edited_data[
+                edited_data["Delete?"] == True
+            ]
 
             if selected_rows.empty:
                 return 0
 
-            ids_to_delete = selected_rows["db_id"].astype(str).str.strip().tolist()
+            ids_to_delete = (
+                selected_rows["db_id"]
+                .astype(str)
+                .str.strip()
+                .tolist()
+            )
 
-            return delete_entries_by_ids(ids_to_delete)
+            return soft_delete_entries_by_ids(
+                entry_ids=ids_to_delete,
+                owner_phone=phone,
+                deleted_by=phone,
+                delete_source="streamlit",
+            )
         
         with st.container(key="desktop_expense_buttons"):
             if st.button("💾 Save Changes", type="primary", use_container_width=True, key="desktop_save_expenses"):
@@ -1441,7 +1465,7 @@ if screen == "📊 Dashboard":
                 if deleted_count == 0:
                     st.warning("Please select at least one expense to delete.")
                 else:
-                    st.success(f"Deleted {deleted_count} expense(s).")
+                    st.success(f"Moved {deleted_count} record(s) to Recently Deleted.")
                     st.cache_data.clear()
                     st.rerun()
 
@@ -1461,7 +1485,9 @@ if screen == "📊 Dashboard":
                 if deleted_count == 0:
                     st.warning("Please select at least one expense to delete.")
                 else:
-                    st.success(f"Deleted {deleted_count} expense(s).")
+                    st.success(
+                        f"Moved {deleted_count} record(s) to Recently Deleted."
+                    )
                     st.cache_data.clear()
                     st.rerun()
 
@@ -1664,6 +1690,160 @@ elif screen == "📁 Folder View":
                             st.caption("No image available.")
 
                         st.divider()
+
+elif screen == "🗑️ Recently Deleted":
+    st.subheader("🗑️ Recently Deleted")
+    st.caption(
+        "Deleted records remain here for 30 days. "
+        "You can restore them or permanently delete them."
+    )
+
+    # Clean up anything older than 30 days.
+    try:
+        purged_count = purge_expired_deleted_entries()
+
+        if purged_count > 0:
+            st.info(
+                f"Permanently removed {purged_count} record(s) "
+                f"that were deleted more than 30 days ago."
+            )
+    except Exception as e:
+        st.warning(f"Automatic cleanup could not run: {str(e)}")
+
+    deleted_df = load_recently_deleted_entries(
+        owner_phone=phone,
+        limit=500
+    )
+
+    if deleted_df.empty:
+        st.success("Recently Deleted is empty.")
+
+    else:
+        deleted_df["total"] = pd.to_numeric(
+            deleted_df.get("total", 0),
+            errors="coerce"
+        ).fillna(0)
+
+        deleted_df["deleted_at"] = pd.to_datetime(
+            deleted_df.get("deleted_at"),
+            errors="coerce"
+        )
+
+        st.metric(
+            "Records in Recently Deleted",
+            len(deleted_df)
+        )
+
+        for _, row in deleted_df.iterrows():
+            entry_id = str(row.get("id", ""))
+            transaction_type = str(
+                row.get("transaction_type", "expense")
+            ).title()
+            vendor = str(row.get("vendor", ""))
+            description = str(row.get("description", ""))
+            category = str(row.get("category", ""))
+            amount = float(row.get("total", 0) or 0)
+            entry_date = str(row.get("date", ""))
+            deleted_at = row.get("deleted_at")
+            deleted_by = str(row.get("deleted_by", ""))
+            delete_source = str(row.get("delete_source", ""))
+            days_remaining = int(
+                pd.to_numeric(
+                    row.get("days_remaining", 0),
+                    errors="coerce"
+                ) or 0
+            )
+
+            reference = f"EXP-{entry_id}"
+
+            with st.expander(
+                f"{reference} • {transaction_type} • "
+                f"{vendor} • ₹{amount:,.2f}",
+                expanded=False
+            ):
+                st.write(f"**Reference:** {reference}")
+                st.write(f"**Transaction date:** {entry_date}")
+                st.write(f"**Type:** {transaction_type}")
+                st.write(f"**Vendor / Customer:** {vendor}")
+                st.write(f"**Description:** {description}")
+                st.write(f"**Category:** {category}")
+                st.write(f"**Amount:** ₹{amount:,.2f}")
+
+                if pd.notna(deleted_at):
+                    st.write(
+                        "**Deleted on:** "
+                        f"{deleted_at.strftime('%d-%b-%Y %I:%M %p')}"
+                    )
+
+                if deleted_by:
+                    st.write(f"**Deleted by:** {deleted_by}")
+
+                if delete_source:
+                    st.write(
+                        f"**Delete source:** {delete_source.title()}"
+                    )
+
+                st.warning(
+                    f"{days_remaining} day(s) remaining before "
+                    f"automatic permanent deletion."
+                )
+
+                restore_col, permanent_col = st.columns(2)
+
+                with restore_col:
+                    if st.button(
+                        "♻️ Restore",
+                        key=f"restore_deleted_{entry_id}",
+                        use_container_width=True
+                    ):
+                        restored = restore_deleted_entry(
+                            entry_id=entry_id,
+                            owner_phone=phone,
+                        )
+
+                        if restored:
+                            st.success(
+                                f"{reference} restored successfully."
+                            )
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.warning(
+                                "This record could not be restored."
+                            )
+
+                with permanent_col:
+                    confirm_key = (
+                        f"confirm_permanent_delete_{entry_id}"
+                    )
+
+                    confirm_delete = st.checkbox(
+                        "Confirm permanent deletion",
+                        key=confirm_key,
+                    )
+
+                    if st.button(
+                        "🗑️ Delete Permanently",
+                        key=f"permanent_delete_{entry_id}",
+                        use_container_width=True,
+                        disabled=not confirm_delete,
+                    ):
+                        deleted = permanently_delete_entry(
+                            entry_id=entry_id,
+                            owner_phone=phone,
+                        )
+
+                        if deleted:
+                            st.success(
+                                f"{reference} permanently deleted."
+                            )
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.warning(
+                                "This record could not be deleted."
+                            )
+                            
 elif screen == "⚙️ Settings":
     st.subheader("⚙️ Settings")
     st.caption("Manage your business profile, staff uploaders, and financial to-dos.")

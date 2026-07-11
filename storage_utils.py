@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, text, inspect
 from sqlalchemy import text
 
 
+
 BASE_DIR = "finwise_storage"
 
 DEFAULT_FOLDERS = [
@@ -257,6 +258,39 @@ def init_db():
         conn.execute(text("""
         CREATE INDEX IF NOT EXISTS idx_user_categories_owner
         ON user_categories(owner_phone);
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE entries
+            ADD COLUMN IF NOT EXISTS is_deleted TEXT DEFAULT 'no'
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE entries
+            ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE entries
+            ADD COLUMN IF NOT EXISTS deleted_by TEXT
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE entries
+            ADD COLUMN IF NOT EXISTS delete_source TEXT
+        """))
+
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_entries_recycle_bin
+            ON entries(user_phone, is_deleted, deleted_at)
+        """))
+
+        conn.execute(text("""
+            DELETE FROM entries
+            WHERE LOWER(COALESCE(is_deleted, 'no'))
+                IN ('yes', 'true', '1')
+            AND deleted_at IS NOT NULL
+            AND deleted_at < CURRENT_TIMESTAMP - INTERVAL '30 days'
         """))
 
 
@@ -1188,3 +1222,275 @@ def get_petpooja_total_for_user(phone, start_date=None, end_date=None):
     except Exception as e:
         print("get_petpooja_total_for_user error:", str(e))
         return 0.0
+    
+def ensure_recycle_bin_columns():
+    """
+    Safely adds recycle-bin fields without changing existing records.
+    """
+    if engine is None:
+        return
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            ALTER TABLE entries
+            ADD COLUMN IF NOT EXISTS is_deleted TEXT DEFAULT 'no'
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE entries
+            ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE entries
+            ADD COLUMN IF NOT EXISTS deleted_by TEXT
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE entries
+            ADD COLUMN IF NOT EXISTS delete_source TEXT
+        """))
+
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_entries_recycle_bin
+            ON entries(user_phone, is_deleted, deleted_at)
+        """))
+
+def soft_delete_entry(
+    entry_id,
+    owner_phone,
+    deleted_by="",
+    delete_source="dashboard",
+):
+    """
+    Moves an entry to Recently Deleted.
+    It does not permanently remove the row.
+    """
+    if engine is None:
+        return 0
+
+    ensure_recycle_bin_columns()
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                UPDATE entries
+                SET
+                    is_deleted = 'yes',
+                    deleted_at = CURRENT_TIMESTAMP,
+                    deleted_by = :deleted_by,
+                    delete_source = :delete_source
+                WHERE id = :entry_id
+                  AND user_phone = :owner_phone
+                  AND LOWER(COALESCE(is_deleted, 'no'))
+                      NOT IN ('yes', 'true', '1')
+            """),
+            {
+                "entry_id": str(entry_id),
+                "owner_phone": clean_phone(owner_phone),
+                "deleted_by": clean_phone(deleted_by),
+                "delete_source": str(delete_source or "dashboard"),
+            }
+        )
+
+    return result.rowcount
+
+def soft_delete_entries_by_ids(
+    entry_ids,
+    owner_phone,
+    deleted_by="",
+    delete_source="dashboard",
+):
+    if engine is None or not entry_ids:
+        return 0
+
+    ensure_recycle_bin_columns()
+
+    cleaned_ids = [
+        str(entry_id).strip()
+        for entry_id in entry_ids
+        if str(entry_id).strip()
+    ]
+
+    if not cleaned_ids:
+        return 0
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                UPDATE entries
+                SET
+                    is_deleted = 'yes',
+                    deleted_at = CURRENT_TIMESTAMP,
+                    deleted_by = :deleted_by,
+                    delete_source = :delete_source
+                WHERE CAST(id AS TEXT) = ANY(:entry_ids)
+                  AND user_phone = :owner_phone
+                  AND LOWER(COALESCE(is_deleted, 'no'))
+                      NOT IN ('yes', 'true', '1')
+            """),
+            {
+                "entry_ids": cleaned_ids,
+                "owner_phone": clean_phone(owner_phone),
+                "deleted_by": clean_phone(deleted_by),
+                "delete_source": str(delete_source or "dashboard"),
+            }
+        )
+
+    return result.rowcount
+
+def load_recently_deleted_entries(owner_phone, limit=500):
+    if engine is None:
+        return pd.DataFrame()
+
+    ensure_recycle_bin_columns()
+
+    try:
+        return pd.read_sql(
+            text("""
+                SELECT
+                    id,
+                    date,
+                    transaction_type,
+                    vendor,
+                    description,
+                    category,
+                    folder,
+                    total,
+                    currency,
+                    user_phone,
+                    uploaded_by,
+                    image_path,
+                    source,
+                    deleted_at,
+                    deleted_by,
+                    delete_source,
+                    CASE
+                        WHEN deleted_at IS NULL THEN 0
+                        ELSE GREATEST(
+                            0,
+                            30 - EXTRACT(
+                                DAY FROM CURRENT_TIMESTAMP - deleted_at
+                            )::INTEGER
+                        )
+                    END AS days_remaining
+                FROM entries
+                WHERE user_phone = :owner_phone
+                  AND LOWER(COALESCE(is_deleted, 'no'))
+                      IN ('yes', 'true', '1')
+                ORDER BY deleted_at DESC NULLS LAST, id DESC
+                LIMIT :limit
+            """),
+            engine,
+            params={
+                "owner_phone": clean_phone(owner_phone),
+                "limit": int(limit),
+            }
+        )
+
+    except Exception as e:
+        print("LOAD RECENTLY DELETED ERROR:", str(e), flush=True)
+        return pd.DataFrame()
+    
+def restore_deleted_entry(entry_id, owner_phone):
+    if engine is None:
+        return 0
+
+    ensure_recycle_bin_columns()
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                UPDATE entries
+                SET
+                    is_deleted = 'no',
+                    deleted_at = NULL,
+                    deleted_by = NULL,
+                    delete_source = NULL
+                WHERE id = :entry_id
+                  AND user_phone = :owner_phone
+                  AND LOWER(COALESCE(is_deleted, 'no'))
+                      IN ('yes', 'true', '1')
+            """),
+            {
+                "entry_id": str(entry_id),
+                "owner_phone": clean_phone(owner_phone),
+            }
+        )
+
+    return result.rowcount
+
+def permanently_delete_entry(entry_id, owner_phone):
+    if engine is None:
+        return 0
+
+    ensure_recycle_bin_columns()
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                DELETE FROM entries
+                WHERE id = :entry_id
+                  AND user_phone = :owner_phone
+                  AND LOWER(COALESCE(is_deleted, 'no'))
+                      IN ('yes', 'true', '1')
+            """),
+            {
+                "entry_id": str(entry_id),
+                "owner_phone": clean_phone(owner_phone),
+            }
+        )
+
+    return result.rowcount
+
+def purge_expired_deleted_entries():
+    """
+    Permanently removes entries that have remained deleted for 30+ days.
+    """
+    if engine is None:
+        return 0
+
+    ensure_recycle_bin_columns()
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                DELETE FROM entries
+                WHERE LOWER(COALESCE(is_deleted, 'no'))
+                    IN ('yes', 'true', '1')
+                  AND deleted_at IS NOT NULL
+                  AND deleted_at < CURRENT_TIMESTAMP - INTERVAL '30 days'
+            """)
+        )
+
+    return result.rowcount
+
+def get_entry_by_reference(entry_id, owner_phone, include_deleted=False):
+    if engine is None:
+        return None
+
+    deleted_filter = ""
+
+    if not include_deleted:
+        deleted_filter = """
+            AND LOWER(COALESCE(is_deleted, 'no'))
+                NOT IN ('yes', 'true', '1')
+        """
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(f"""
+                SELECT *
+                FROM entries
+                WHERE id = :entry_id
+                  AND user_phone = :owner_phone
+                  {deleted_filter}
+                LIMIT 1
+            """),
+            {
+                "entry_id": str(entry_id),
+                "owner_phone": clean_phone(owner_phone),
+            }
+        ).mappings().fetchone()
+
+    return dict(row) if row else None
