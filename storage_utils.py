@@ -293,6 +293,8 @@ def init_db():
             AND deleted_at < CURRENT_TIMESTAMP - INTERVAL '30 days'
         """))
 
+        init_income_table()
+
 
 def _existing_columns(table_name: str):
     inspector = inspect(engine)
@@ -1494,3 +1496,183 @@ def get_entry_by_reference(entry_id, owner_phone, include_deleted=False):
         ).mappings().fetchone()
 
     return dict(row) if row else None
+
+def init_income_table():
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS income_entries (
+                id BIGSERIAL PRIMARY KEY,
+                user_phone TEXT NOT NULL,
+                income_date TEXT NOT NULL,
+                customer_name TEXT NOT NULL,
+                event_name TEXT,
+                income_category TEXT NOT NULL,
+                description TEXT,
+                amount NUMERIC(14, 2) NOT NULL DEFAULT 0,
+                payment_method TEXT,
+                currency TEXT DEFAULT 'INR',
+                source TEXT DEFAULT 'Manual Dashboard',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_income_entries_user_date
+            ON income_entries(user_phone, income_date)
+        """))
+
+def append_income_entry(entry):
+    init_income_table()
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                INSERT INTO income_entries (
+                    user_phone,
+                    income_date,
+                    customer_name,
+                    event_name,
+                    income_category,
+                    description,
+                    amount,
+                    payment_method,
+                    currency,
+                    source
+                )
+                VALUES (
+                    :user_phone,
+                    :income_date,
+                    :customer_name,
+                    :event_name,
+                    :income_category,
+                    :description,
+                    :amount,
+                    :payment_method,
+                    :currency,
+                    :source
+                )
+                RETURNING id
+            """),
+            {
+                "user_phone": clean_phone(
+                    entry.get("user_phone", "")
+                ),
+                "income_date": entry.get("income_date", ""),
+                "customer_name": entry.get("customer_name", ""),
+                "event_name": entry.get("event_name", ""),
+                "income_category": entry.get(
+                    "income_category",
+                    "Other Income"
+                ),
+                "description": entry.get("description", ""),
+                "amount": float(entry.get("amount", 0) or 0),
+                "payment_method": entry.get("payment_method", ""),
+                "currency": entry.get("currency", "INR"),
+                "source": entry.get(
+                    "source",
+                    "Manual Dashboard"
+                ),
+            }
+        )
+
+        new_id = result.scalar()
+
+    return new_id
+
+def load_income_entries_for_user(
+    phone,
+    start_date=None,
+    end_date=None,
+    limit=500
+):
+    init_income_table()
+
+    filters = [
+        "user_phone = :user_phone"
+    ]
+
+    params = {
+        "user_phone": clean_phone(phone),
+        "limit": int(limit),
+    }
+
+    if start_date is not None:
+        filters.append(
+            "income_date::date >= :start_date"
+        )
+        params["start_date"] = start_date
+
+    if end_date is not None:
+        filters.append(
+            "income_date::date <= :end_date"
+        )
+        params["end_date"] = end_date
+
+    where_clause = " AND ".join(filters)
+
+    return pd.read_sql(
+        text(f"""
+            SELECT
+                id,
+                income_date,
+                customer_name,
+                event_name,
+                income_category,
+                description,
+                amount,
+                payment_method,
+                currency,
+                source,
+                created_at
+            FROM income_entries
+            WHERE {where_clause}
+            ORDER BY income_date::date DESC, id DESC
+            LIMIT :limit
+        """),
+        engine,
+        params=params,
+    )
+
+def get_manual_income_total_for_user(
+    phone,
+    start_date=None,
+    end_date=None
+):
+    init_income_table()
+
+    filters = [
+        "user_phone = :user_phone"
+    ]
+
+    params = {
+        "user_phone": clean_phone(phone)
+    }
+
+    if start_date is not None:
+        filters.append(
+            "income_date::date >= :start_date"
+        )
+        params["start_date"] = start_date
+
+    if end_date is not None:
+        filters.append(
+            "income_date::date <= :end_date"
+        )
+        params["end_date"] = end_date
+
+    where_clause = " AND ".join(filters)
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(f"""
+                SELECT
+                    COALESCE(SUM(amount), 0) AS total
+                FROM income_entries
+                WHERE {where_clause}
+            """),
+            params
+        ).fetchone()
+
+    return float(row.total or 0)
+

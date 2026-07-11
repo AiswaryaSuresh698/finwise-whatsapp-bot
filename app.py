@@ -51,6 +51,12 @@ from storage_utils import (
     restore_deleted_entry,
     permanently_delete_entry,
     purge_expired_deleted_entries,
+    get_entry_by_reference,
+    soft_delete_entry,
+    init_income_table,
+    append_income_entry,
+    load_income_entries_for_user,
+    get_manual_income_total_for_user,
 )
 
 load_dotenv()
@@ -72,6 +78,7 @@ st.markdown("""
 @st.cache_resource
 def initialize_database():
     init_db()
+    init_income_table()
     return True
 
 initialize_database()
@@ -101,6 +108,33 @@ def cached_petpooja_total(phone, start_date=None, end_date=None):
     return get_petpooja_total_for_user(phone, start_date, end_date)
 
 ensure_storage()
+
+@st.cache_data(ttl=120)
+def cached_manual_income_total(
+    phone,
+    start_date=None,
+    end_date=None
+):
+    return get_manual_income_total_for_user(
+        phone,
+        start_date,
+        end_date
+    )
+
+
+@st.cache_data(ttl=300)
+def cached_income_entries(
+    phone,
+    start_date=None,
+    end_date=None,
+    limit=500
+):
+    return load_income_entries_for_user(
+        phone=phone,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+    )
 
 
 
@@ -1183,7 +1217,18 @@ if screen == "📊 Dashboard":
         sql_end_date
     )
 
-    total_income = whatsapp_income + petpooja_filtered_income
+    manual_income_total = cached_manual_income_total(
+        phone,
+        sql_start_date,
+        sql_end_date
+    )
+
+    total_income = (
+        whatsapp_income
+        + petpooja_filtered_income
+        + manual_income_total
+    )
+
     net_amount = total_income - total_expense
 
     m1, m2, m3 = st.columns(3)
@@ -1219,7 +1264,14 @@ if screen == "📊 Dashboard":
             )
 
         with c3:
-            manual_type = st.selectbox("Type", ["expense", "income"], key="manual_expense_type")
+            manual_type = "expense"
+
+            st.text_input(
+                "Type",
+                value="Expense",
+                disabled=True,
+                key="manual_expense_type_display"
+            )
             manual_description = st.text_input(
                 "Description",
                 placeholder="Example: milk purchase",
@@ -1273,9 +1325,9 @@ if screen == "📊 Dashboard":
 
         display_df = pd.DataFrame()
         display_df["db_id"] = original_df.get("id", "").astype(str)
-        display_df["Expense Number"] = [
-            f"EXP-{i:05d}" for i in range(1, len(original_df) + 1)
-        ]
+        display_df["Expense Number"] = (
+            "EXP-" + original_df["id"].astype(str)
+        )
 
         display_df["Date"] = original_df.get("date", "")
         display_df["Type"] = original_df.get("transaction_type", "")
@@ -1492,7 +1544,19 @@ if screen == "📊 Dashboard":
                     st.rerun()
 
     st.write("### Petpooja Sales Summary")
-    st.metric("Petpooja Total Sales", f"₹{petpooja_filtered_income:,.2f}")
+    income_metric_1, income_metric_2 = st.columns(2)
+
+    with income_metric_1:
+        st.metric(
+            "Petpooja Total Sales",
+            f"₹{petpooja_filtered_income:,.2f}"
+        )
+
+    with income_metric_2:
+        st.metric(
+            "Manual Event / Catering Income",
+            f"₹{manual_income_total:,.2f}"
+        )
 
     # Upload Petpooja first, then reload saved file
     st.write("### Upload Petpooja Daily/Monthly Sales Summary")
@@ -1562,53 +1626,432 @@ if screen == "📊 Dashboard":
                 unsafe_allow_html=True
             )
 
-    st.write("### Download Report")
+    st.write("### 💰 Manual Income")
 
-if st.button("📄 Prepare Excel Download", use_container_width=True):
-    output = BytesIO()
-
-    export_df = df.drop(
-        columns=[
-            "user_phone_clean", "id", "date_parsed", "transaction_type",
-            "user_phone", "category", "subtotal", "tax", "currency",
-            "confidence", "reason", "image_path", "created_at",
-            "payment_method", "source", "duplicate_key"
-        ],
-        errors="ignore"
+    st.caption(
+        "Add income that is not included in Petpooja, "
+        "such as catering, party events or private orders."
     )
 
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        export_df = export_df.reset_index(drop=True)
+    with st.expander(
+        "➕ Add Manual Income",
+        expanded=False
+    ):
+        income_col1, income_col2, income_col3 = st.columns(3)
 
-        export_df.insert(
-            0,
-            "Expense Number",
-            [f"EXP-{i:05d}" for i in range(1, len(export_df) + 1)]
+        with income_col1:
+            income_date = st.date_input(
+                "Income Date",
+                value=date.today(),
+                key="manual_income_date"
+            )
+
+            income_customer = st.text_input(
+                "Customer Name",
+                placeholder="Example: Uma",
+                key="manual_income_customer"
+            )
+
+        with income_col2:
+            income_event_name = st.text_input(
+                "Event / Order Name",
+                placeholder="Example: Birthday Catering",
+                key="manual_income_event"
+            )
+
+            income_category = st.selectbox(
+                "Income Category",
+                [
+                    "Catering Income",
+                    "Party Event Income",
+                    "Private Event Income",
+                    "Corporate Event Income",
+                    "Bulk Order Income",
+                    "Other Income",
+                ],
+                key="manual_income_category"
+            )
+
+        with income_col3:
+            income_amount = st.number_input(
+                "Income Amount",
+                min_value=0.0,
+                step=100.0,
+                format="%.2f",
+                key="manual_income_amount"
+            )
+
+            income_payment_method = st.selectbox(
+                "Payment Method",
+                [
+                    "Cash",
+                    "UPI",
+                    "Bank Transfer",
+                    "Credit Card",
+                    "Cheque",
+                    "Other",
+                ],
+                key="manual_income_payment_method"
+            )
+
+        income_description = st.text_area(
+            "Description",
+            placeholder=(
+                "Example: Catering for 80 guests; "
+                "full payment received"
+            ),
+            key="manual_income_description"
         )
 
-        export_df.to_excel(writer, index=False, sheet_name="WhatsApp Expenses")
+        if st.button(
+            "💾 Save Income",
+            type="primary",
+            use_container_width=True,
+            key="save_manual_income"
+        ):
+            customer_value = income_customer.strip()
+            event_value = income_event_name.strip()
 
-        if not petpooja_saved_df.empty:
-            petpooja_saved_df.drop(
-                columns=["date_parsed"],
-                errors="ignore"
-            ).to_excel(writer, index=False, sheet_name="Petpooja Sales")
+            if not customer_value:
+                st.error("Please enter the customer name.")
 
-        pd.DataFrame([
-            {"Metric": "Total Income", "Amount": total_income},
-            {"Metric": "Total Expense", "Amount": total_expense},
-            {"Metric": "Net", "Amount": net_amount},
-        ]).to_excel(writer, index=False, sheet_name="Totals")
+            elif not event_value:
+                st.error("Please enter the event or order name.")
 
-    output.seek(0)
+            elif income_amount <= 0:
+                st.error(
+                    "Please enter an income amount greater than 0."
+                )
 
-    st.download_button(
-        "⬇️ Download Excel",
-        data=output,
-        file_name="finwise_extracted_bills.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
+            else:
+                income_entry = {
+                    "user_phone": clean_phone(phone),
+                    "income_date": normalize_date_ddmmyyyy(
+                        str(income_date)
+                    ),
+                    "customer_name": customer_value.title(),
+                    "event_name": event_value.title(),
+                    "income_category": income_category,
+                    "description": (
+                        income_description.strip()
+                        or event_value
+                    ),
+                    "amount": float(income_amount),
+                    "payment_method": income_payment_method,
+                    "currency": "INR",
+                    "source": "Manual Dashboard",
+                }
+
+                income_id = append_income_entry(
+                    income_entry
+                )
+
+                st.success(
+                    f"Income saved successfully. "
+                    f"Reference: INC-{income_id}"
+                )
+
+                st.cache_data.clear()
+                st.rerun()
+
+        if "show_income_table" not in st.session_state:
+            st.session_state.show_income_table = False
+
+
+        income_button_label = (
+            "Hide Income Records"
+            if st.session_state.show_income_table
+            else "View Income Records"
+        )
+
+        if st.button(
+            income_button_label,
+            use_container_width=True,
+            key="toggle_income_table"
+        ):
+            st.session_state.show_income_table = (
+                not st.session_state.show_income_table
+            )
+
+
+        if st.session_state.show_income_table:
+            income_df = cached_income_entries(
+                phone=phone,
+                start_date=sql_start_date,
+                end_date=sql_end_date,
+                limit=500,
+            )
+
+            if income_df.empty:
+                st.info(
+                    "No manual income records found for "
+                    "the selected timeframe."
+                )
+
+            else:
+                income_display_df = income_df.copy()
+
+                income_display_df.insert(
+                    0,
+                    "Reference",
+                    "INC-" + income_display_df["id"].astype(str)
+                )
+
+                income_display_df["amount"] = pd.to_numeric(
+                    income_display_df["amount"],
+                    errors="coerce"
+                ).fillna(0)
+
+                income_display_df = income_display_df.rename(
+                    columns={
+                        "income_date": "Date",
+                        "customer_name": "Customer",
+                        "event_name": "Event / Order",
+                        "income_category": "Category",
+                        "description": "Description",
+                        "amount": "Amount",
+                        "payment_method": "Payment Method",
+                        "currency": "Currency",
+                        "source": "Source",
+                    }
+                )
+
+                st.dataframe(
+                    income_display_df[
+                        [
+                            "Reference",
+                            "Date",
+                            "Customer",
+                            "Event / Order",
+                            "Category",
+                            "Description",
+                            "Amount",
+                            "Payment Method",
+                            "Currency",
+                        ]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Amount": st.column_config.NumberColumn(
+                            "Amount",
+                            format="₹%.2f"
+                        )
+                    },
+                )
+
+            st.write("### Download Report")
+
+            if st.button(
+                "📄 Prepare Excel Download",
+                use_container_width=True,
+                key="prepare_excel_download"
+            ):
+                output = BytesIO()
+
+                # -----------------------------
+                # Expense export
+                # -----------------------------
+                expense_export_df = df.copy()
+
+                if not expense_export_df.empty:
+                    expense_export_df = expense_export_df.reset_index(drop=True)
+
+                    if "id" in expense_export_df.columns:
+                        expense_export_df.insert(
+                            0,
+                            "Expense Reference",
+                            "EXP-" + expense_export_df["id"].astype(str)
+                        )
+
+                    expense_export_df = expense_export_df.drop(
+                        columns=[
+                            "user_phone_clean",
+                            "id",
+                            "date_parsed",
+                            "user_phone",
+                            "subtotal",
+                            "tax",
+                            "currency",
+                            "confidence",
+                            "reason",
+                            "image_path",
+                            "created_at",
+                            "duplicate_key",
+                            "is_deleted",
+                            "deleted_at",
+                            "deleted_by",
+                            "delete_source",
+                        ],
+                        errors="ignore"
+                    )
+
+                # -----------------------------
+                # Manual income export
+                # Loaded only after button click
+                # -----------------------------
+                manual_income_export_df = cached_income_entries(
+                    phone=phone,
+                    start_date=sql_start_date,
+                    end_date=sql_end_date,
+                    limit=5000,
+                )
+
+                if not manual_income_export_df.empty:
+                    manual_income_export_df = (
+                        manual_income_export_df
+                        .reset_index(drop=True)
+                        .copy()
+                    )
+
+                    if "id" in manual_income_export_df.columns:
+                        manual_income_export_df.insert(
+                            0,
+                            "Income Reference",
+                            "INC-" + manual_income_export_df["id"].astype(str)
+                        )
+
+                    manual_income_export_df = manual_income_export_df.rename(
+                        columns={
+                            "income_date": "Date",
+                            "customer_name": "Customer",
+                            "event_name": "Event / Order",
+                            "income_category": "Income Category",
+                            "description": "Description",
+                            "amount": "Amount",
+                            "payment_method": "Payment Method",
+                            "currency": "Currency",
+                            "source": "Source",
+                            "created_at": "Created At",
+                        }
+                    )
+
+                    manual_income_export_df = manual_income_export_df.drop(
+                        columns=["id"],
+                        errors="ignore"
+                    )
+
+                # -----------------------------
+                # Petpooja export
+                # -----------------------------
+                petpooja_export_df = petpooja_saved_df.copy()
+
+                if not petpooja_export_df.empty:
+                    petpooja_export_df = petpooja_export_df.drop(
+                        columns=["date_parsed"],
+                        errors="ignore"
+                    )
+
+                # -----------------------------
+                # Write Excel workbook
+                # -----------------------------
+                with pd.ExcelWriter(
+                    output,
+                    engine="openpyxl"
+                ) as writer:
+
+                    if not expense_export_df.empty:
+                        expense_export_df.to_excel(
+                            writer,
+                            index=False,
+                            sheet_name="Expenses"
+                        )
+                    else:
+                        pd.DataFrame(
+                            columns=[
+                                "Expense Reference",
+                                "Date",
+                                "Vendor",
+                                "Description",
+                                "Category",
+                                "Amount",
+                            ]
+                        ).to_excel(
+                            writer,
+                            index=False,
+                            sheet_name="Expenses"
+                        )
+
+                    if not petpooja_export_df.empty:
+                        petpooja_export_df.to_excel(
+                            writer,
+                            index=False,
+                            sheet_name="Petpooja Sales"
+                        )
+                    else:
+                        pd.DataFrame().to_excel(
+                            writer,
+                            index=False,
+                            sheet_name="Petpooja Sales"
+                        )
+
+                    if not manual_income_export_df.empty:
+                        manual_income_export_df.to_excel(
+                            writer,
+                            index=False,
+                            sheet_name="Manual Income"
+                        )
+                    else:
+                        pd.DataFrame(
+                            columns=[
+                                "Income Reference",
+                                "Date",
+                                "Customer",
+                                "Event / Order",
+                                "Income Category",
+                                "Description",
+                                "Amount",
+                                "Payment Method",
+                                "Currency",
+                            ]
+                        ).to_excel(
+                            writer,
+                            index=False,
+                            sheet_name="Manual Income"
+                        )
+
+                    pd.DataFrame(
+                        [
+                            {
+                                "Metric": "Petpooja Income",
+                                "Amount": petpooja_filtered_income,
+                            },
+                            {
+                                "Metric": "Manual Income",
+                                "Amount": manual_income_total,
+                            },
+                            {
+                                "Metric": "Total Income",
+                                "Amount": total_income,
+                            },
+                            {
+                                "Metric": "Total Expense",
+                                "Amount": total_expense,
+                            },
+                            {
+                                "Metric": "Net",
+                                "Amount": net_amount,
+                            },
+                        ]
+                    ).to_excel(
+                        writer,
+                        index=False,
+                        sheet_name="Totals"
+                    )
+
+                output.seek(0)
+
+                st.download_button(
+                    "⬇️ Download Excel",
+                    data=output,
+                    file_name="finwise_financial_report.xlsx",
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "spreadsheetml.sheet"
+                    ),
+                    use_container_width=True,
+                    key="download_finwise_excel"
+                )
 
 elif screen == "📁 Folder View":
 
@@ -1843,7 +2286,7 @@ elif screen == "🗑️ Recently Deleted":
                             st.warning(
                                 "This record could not be deleted."
                             )
-                            
+
 elif screen == "⚙️ Settings":
     st.subheader("⚙️ Settings")
     st.caption("Manage your business profile, staff uploaders, and financial to-dos.")
