@@ -93,9 +93,10 @@ initialize_database()
 def cached_load_entries():
     return load_entries()
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=30)
 def cached_load_entries_for_user(phone, limit=100):
     return load_entries_for_user(phone, limit)
+    
 
 @st.cache_data(ttl=300)
 def cached_load_petpooja_entries_for_user(phone, limit=1000):
@@ -1291,9 +1292,35 @@ if screen == "📊 Dashboard":
     if "expense_limit" not in st.session_state:
         st.session_state.expense_limit = 100
 
-    df = cached_load_entries_for_user(phone, limit=st.session_state.expense_limit)
+    # Load enough records first so newly inserted database IDs
+    # are not excluded because of an older bill date.
+    df = cached_load_entries_for_user(
+        phone,
+        limit=1000
+    )
+
+    # Always show the newest database records first.
+    if not df.empty and "id" in df.columns:
+        df["id"] = pd.to_numeric(
+            df["id"],
+            errors="coerce"
+        )
+
+        df = (
+            df
+            .sort_values(
+                by="id",
+                ascending=False
+            )
+            .head(st.session_state.expense_limit)
+            .copy()
+        )
     if not df.empty and "is_deleted" in df.columns:
-        df = df[df["is_deleted"].astype(str).str.lower() != "yes"].copy()
+        df = df[
+            df["is_deleted"]
+            .astype(str)
+            .str.lower() != "yes"
+        ].copy()
 
     if not df.empty:
         if "vendor" in df.columns:
