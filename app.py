@@ -1316,10 +1316,16 @@ if screen == "📊 Dashboard":
             .copy()
         )
     if not df.empty and "is_deleted" in df.columns:
-        df = df[
+        deleted_values = (
             df["is_deleted"]
+            .fillna("no")
             .astype(str)
-            .str.lower() != "yes"
+            .str.strip()
+            .str.lower()
+        )
+
+        df = df[
+            ~deleted_values.isin(["yes", "true", "1"])
         ].copy()
 
     if not df.empty:
@@ -2557,7 +2563,17 @@ elif screen == "📁 Folder View":
     df = cached_load_entries_for_user(phone, limit=1000)
 
     if not df.empty and "is_deleted" in df.columns:
-        df = df[df["is_deleted"].astype(str).str.lower() != "yes"].copy()
+        deleted_values = (
+            df["is_deleted"]
+            .fillna("no")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+
+        df = df[
+            ~deleted_values.isin(["yes", "true", "1"])
+        ].copy()
 
     if df.empty:
         st.info("No bills found for this phone number.")

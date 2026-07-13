@@ -530,10 +530,12 @@ def load_entries_for_user(user_phone, limit=500):
             SELECT *
             FROM entries
             WHERE COALESCE(user_phone, '') = :user_phone
-            AND COALESCE(is_deleted, '') != 'yes'
+            AND LOWER(TRIM(COALESCE(is_deleted, 'no')))
+                NOT IN ('yes', 'true', '1')
             ORDER BY
                 CASE
-                    WHEN date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN date::date
+                    WHEN date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                    THEN date::date
                     ELSE NULL
                 END DESC NULLS LAST,
                 id::bigint DESC NULLS LAST
@@ -1160,7 +1162,8 @@ def get_dashboard_totals_for_user(phone, start_date=None, end_date=None):
                 ), 0) AS total_expense
             FROM entries
             WHERE user_phone = :user_phone
-            AND COALESCE(is_deleted, '') != 'yes'
+            AND LOWER(TRIM(COALESCE(is_deleted, 'no')))
+                NOT IN ('yes', 'true', '1')
             AND LOWER(COALESCE(source, '')) != 'petpooja'
             {date_sql}
         """)

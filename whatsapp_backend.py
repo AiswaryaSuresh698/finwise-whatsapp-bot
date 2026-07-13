@@ -572,8 +572,8 @@ def is_duplicate_expense(duplicate_key):
                 SELECT id
                 FROM entries
                 WHERE duplicate_key = :duplicate_key
-                  AND LOWER(COALESCE(is_deleted, 'no'))
-                      NOT IN ('yes', 'true', '1')
+                  AND LOWER(TRIM(COALESCE(is_deleted, 'no')))
+                    NOT IN ('yes', 'true', '1')
                 LIMIT 1
             """),
             {
@@ -604,6 +604,8 @@ def append_entry_and_get_id(entry):
                 SELECT id
                 FROM entries
                 WHERE duplicate_key = :duplicate_key
+                AND LOWER(TRIM(COALESCE(is_deleted, 'no')))
+                    NOT IN ('yes', 'true', '1')
                 ORDER BY id DESC
                 LIMIT 1
             """),
@@ -811,7 +813,7 @@ def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url,
 
         entry = {
             "date": normalize_date_ddmmyyyy(extracted.get("date", "")),
-            "transaction_type": extracted.get("transaction_type", "expense"),
+            "transaction_type": "expense",
             "vendor": vendor,
             "user_phone": owner_phone,
             "uploaded_by": uploader_phone,
@@ -1129,9 +1131,11 @@ def query_finance_answer(intent_data, owner_phone):
 
     base_filter = """
         user_phone = :owner_phone
-        AND date::date BETWEEN :start_date AND :end_date
-        AND LOWER(COALESCE(is_deleted, 'no'))
+
+        AND LOWER(TRIM(COALESCE(is_deleted, 'no')))
             NOT IN ('yes', 'true', '1')
+
+        AND date::date BETWEEN :start_date AND :end_date
     """
 
     params = {
@@ -1666,21 +1670,42 @@ def get_last_saved_expense(owner_phone, uploader_phone):
                 SELECT *
                 FROM entries
                 WHERE user_phone = :owner_phone
-                AND uploaded_by = :uploader_phone
-                AND LOWER(COALESCE(transaction_type, 'expense')) = 'expense'
+                  AND uploaded_by = :uploader_phone
+                  AND LOWER(
+                        COALESCE(
+                            transaction_type,
+                            'expense'
+                        )
+                      ) = 'expense'
+                  AND LOWER(
+                        TRIM(
+                            COALESCE(
+                                is_deleted,
+                                'no'
+                            )
+                        )
+                      ) NOT IN (
+                        'yes',
+                        'true',
+                        '1'
+                      )
                 ORDER BY id DESC
                 LIMIT 1
             """),
             {
                 "owner_phone": str(owner_phone),
-                "uploader_phone": str(uploader_phone)
+                "uploader_phone": str(uploader_phone),
             }
         ).mappings().fetchone()
 
     return dict(row) if row else None
 
 
-def update_last_expense_field(entry_id, field_name, value):
+def update_last_expense_field(
+    entry_id,
+    field_name,
+    value
+):
     allowed_fields = {
         "date",
         "vendor",
@@ -1688,7 +1713,7 @@ def update_last_expense_field(entry_id, field_name, value):
         "category",
         "folder",
         "total",
-        "subtotal"
+        "subtotal",
     }
 
     if field_name not in allowed_fields:
@@ -1700,10 +1725,22 @@ def update_last_expense_field(entry_id, field_name, value):
                 UPDATE entries
                 SET {field_name} = :value
                 WHERE id = :entry_id
+                  AND LOWER(
+                        TRIM(
+                            COALESCE(
+                                is_deleted,
+                                'no'
+                            )
+                        )
+                      ) NOT IN (
+                        'yes',
+                        'true',
+                        '1'
+                      )
             """),
             {
                 "entry_id": str(entry_id),
-                "value": str(value)
+                "value": str(value),
             }
         )
 
