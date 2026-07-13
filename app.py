@@ -37,10 +37,6 @@ from storage_utils import (
     load_restaurant_uploaders,
     add_restaurant_uploader,
     deactivate_restaurant_uploader,
-    load_financial_todos,
-    add_financial_todo,
-    update_financial_todo_status,
-    delete_financial_todo,
     load_user_categories,
     add_user_category,
     delete_user_category,
@@ -3591,12 +3587,11 @@ elif screen == "🗑️ Recently Deleted":
 
 elif screen == "⚙️ Settings":
     st.subheader("⚙️ Settings")
-    st.caption("Manage your business profile, staff uploaders, and financial to-dos.")
+    st.caption("Manage your business profile, staff uploaders, and Categories.")
 
     tab1, tab2, tab3, tab4 = st.tabs([
     "🏪 Business Profile",
     "👥 WhatsApp Uploaders",
-    "✅ Financial To-Dos",
     "🏷️ Categories",
 ])
 
@@ -3759,129 +3754,6 @@ elif screen == "⚙️ Settings":
 
                 st.divider()
 
-    # -----------------------------
-    # Financial To-Dos
-    # -----------------------------
-    with tab3:
-        st.markdown("### ✅ Financial To-Dos")
-        st.caption("Track supplier payments, taxes, license renewals, collections, and finance follow-ups.")
-
-        with st.expander("➕ Add Financial To-Do", expanded=False):
-            tc1, tc2 = st.columns(2)
-
-            with tc1:
-                todo_title = st.text_input(
-                    "Task",
-                    placeholder="Example: Pay milk supplier",
-                    key="todo_title",
-                )
-
-                todo_type = st.selectbox(
-                    "Type",
-                    ["Supplier Payment", "Tax", "License Renewal", "Rent", "Customer Collection", "Banking", "Other"],
-                    key="todo_type",
-                )
-
-                todo_due_date = st.date_input(
-                    "Due Date",
-                    value=date.today(),
-                    key="todo_due_date",
-                )
-
-            with tc2:
-                todo_amount = st.number_input(
-                    "Amount",
-                    min_value=0.0,
-                    step=100.0,
-                    format="%.2f",
-                    key="todo_amount",
-                )
-
-                todo_notes = st.text_area(
-                    "Notes",
-                    placeholder="Example: Confirm payment after UPI transfer",
-                    key="todo_notes",
-                )
-
-            if st.button("Add To-Do", type="primary", use_container_width=True):
-                if not todo_title.strip():
-                    st.error("Enter a task.")
-                else:
-                    add_financial_todo(
-                        owner_phone=phone,
-                        title=todo_title,
-                        todo_type=todo_type,
-                        due_date=normalize_date_ddmmyyyy(str(todo_due_date)),
-                        amount=todo_amount,
-                        notes=todo_notes,
-                    )
-
-                    st.success("Financial to-do added.")
-                    st.cache_data.clear()
-                    st.rerun()
-
-        todos_df = load_financial_todos(phone)
-
-        if todos_df.empty:
-            st.info("No financial to-dos added yet.")
-        else:
-            st.markdown("#### Open To-Dos")
-
-            open_todos = todos_df[
-                todos_df["status"].astype(str).str.lower().str.strip() != "done"
-            ].copy()
-
-            if open_todos.empty:
-                st.success("No open financial to-dos.")
-            else:
-                for _, row in open_todos.iterrows():
-                    todo_id = row.get("id", "")
-                    title = row.get("title", "")
-                    todo_type = row.get("todo_type", "")
-                    due_date = row.get("due_date", "")
-                    amount = float(pd.to_numeric(row.get("amount", 0), errors="coerce") or 0)
-                    notes = row.get("notes", "")
-
-                    with st.container():
-                        c1, c2, c3 = st.columns([4, 2, 2])
-
-                        with c1:
-                            st.write(f"**{title}**")
-                            st.caption(f"{todo_type} | Due: {due_date}")
-                            if notes:
-                                st.caption(notes)
-
-                        with c2:
-                            st.write(f"₹{amount:,.2f}")
-
-                        with c3:
-                            if st.button("Mark Done", key=f"done_todo_{todo_id}"):
-                                update_financial_todo_status(todo_id, "done")
-                                st.success("To-do marked done.")
-                                st.cache_data.clear()
-                                st.rerun()
-
-                            if st.button("Delete", key=f"delete_todo_{todo_id}"):
-                                delete_financial_todo(todo_id)
-                                st.success("To-do deleted.")
-                                st.cache_data.clear()
-                                st.rerun()
-
-                        st.divider()
-
-            with st.expander("View Completed To-Dos"):
-                done_todos = todos_df[
-                    todos_df["status"].astype(str).str.lower().str.strip() == "done"
-                ].copy()
-
-                if done_todos.empty:
-                    st.caption("No completed to-dos yet.")
-                else:
-                    st.dataframe(
-                        done_todos[["title", "todo_type", "due_date", "amount", "notes", "status"]],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
 
     with tab4:
         st.markdown("### 🏷️ Categories")

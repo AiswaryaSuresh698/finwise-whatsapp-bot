@@ -36,7 +36,6 @@ from storage_utils import (
     update_vendor_memory,
     engine,
     normalize_date_ddmmyyyy,
-    add_financial_todo,
     get_entry_by_reference,
     soft_delete_entry,
     restore_deleted_entry,
@@ -235,13 +234,11 @@ def get_greeting_reply():
         "📸 Save bill photos\n"
         "💬 Add expenses by text\n"
         "📊 Check profit or expenses\n"
-        "✅ Save financial to-dos\n\n"
         "Examples:\n"
         "• Chicken 850\n"
         "• Costco vegetables 1000\n"
         "• Profit today\n"
         "• Expenses this month\n"
-        "• to do pay milk supplier tomorrow\n\n"
         "How can I help today?"
     )
 
@@ -1540,59 +1537,8 @@ def format_finance_answer(user_question, result):
 import re
 from datetime import datetime
 
-def is_todo_message(message: str) -> bool:
-    msg = str(message or "").strip().lower()
-    return (
-        msg.startswith("to do")
-        or msg.startswith("todo")
-        or msg.startswith("to-do")
-    )
 
 
-def parse_todo_message(message: str) -> dict:
-    text = str(message or "").strip()
-
-    # Remove first line marker: "to do", "todo", "to-do"
-    lines = text.splitlines()
-
-    if lines and lines[0].strip().lower() in ["to do", "todo", "to-do"]:
-        task_text = "\n".join(lines[1:]).strip()
-    else:
-        task_text = re.sub(r"^(to do|todo|to-do)\s*:?", "", text, flags=re.I).strip()
-
-    amount = ""
-    amount_match = re.search(r"(₹|rs\.?|inr)?\s?(\d+(?:,\d+)*(?:\.\d+)?)", task_text, re.I)
-    if amount_match:
-        amount = amount_match.group(2).replace(",", "")
-
-    due_date = ""
-    date_match = re.search(r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", task_text)
-    if date_match:
-        due_date = normalize_date_ddmmyyyy(date_match.group(1))
-
-    todo_type = "Other"
-    lower_text = task_text.lower()
-
-    if any(x in lower_text for x in ["supplier", "vendor", "chicken", "milk", "rice", "grocery"]):
-        todo_type = "Supplier Payment"
-    elif any(x in lower_text for x in ["gst", "tax"]):
-        todo_type = "Tax"
-    elif any(x in lower_text for x in ["license", "fssai", "renewal"]):
-        todo_type = "License Renewal"
-    elif "rent" in lower_text:
-        todo_type = "Rent"
-    elif any(x in lower_text for x in ["collect", "customer", "payment pending"]):
-        todo_type = "Customer Collection"
-    elif any(x in lower_text for x in ["bank", "loan", "emi"]):
-        todo_type = "Banking"
-
-    return {
-        "title": task_text,
-        "todo_type": todo_type,
-        "due_date": due_date,
-        "amount": amount,
-        "notes": "",
-    }
 
 def init_conversation_context_table():
     with engine.begin() as conn:
