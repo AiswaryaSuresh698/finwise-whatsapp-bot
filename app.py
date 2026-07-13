@@ -3755,7 +3755,7 @@ elif screen == "⚙️ Settings":
                 st.divider()
 
 
-    with tab4:
+    with tab3:
         st.markdown("### 🏷️ Categories")
         st.caption("Manage custom categories used for manual expenses, WhatsApp bills, and vendor rules.")
 
