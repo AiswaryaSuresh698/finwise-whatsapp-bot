@@ -3589,7 +3589,7 @@ elif screen == "⚙️ Settings":
     st.subheader("⚙️ Settings")
     st.caption("Manage your business profile, staff uploaders, and Categories.")
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3 = st.tabs([
     "🏪 Business Profile",
     "👥 WhatsApp Uploaders",
     "🏷️ Categories",
