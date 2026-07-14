@@ -252,7 +252,6 @@ def get_help_reply():
         "📊 Report: Profit today\n"
         "📊 Report: Expenses this month\n"
         "🔎 Search: Show chicken bills this month\n"
-        "✅ To-do: to do pay supplier tomorrow\n\n"
         "You can type naturally."
     )
 
@@ -914,6 +913,9 @@ Rules:
 - If date missing for expense, use today: {datetime.now().strftime("%Y-%m-%d")}.
 - If category unclear, use "Uncategorized".
 - If vendor unclear, use "Manual Entry".
+- A message containing only an expense reference such as EXP-428 is not an expense.
+- Never use the number in an EXP reference as an expense amount.
+- Return intent="unknown" for reference-only messages.
 """
 
     try:
@@ -1823,6 +1825,24 @@ def parse_expense_reference(message):
 
     return match.group(1)
 
+def is_expense_reference_only(message):
+    """
+    Matches reference-only messages such as:
+    EXP-428
+    exp 428
+    EXP:428
+    EXP_428
+    """
+    value = str(message or "").strip()
+
+    return bool(
+        re.fullmatch(
+            r"EXP[\s\-_:]*\d+",
+            value,
+            flags=re.I,
+        )
+    )
+
 
 def is_delete_request(message):
     normalized = normalize_chat_text(message)
@@ -2040,6 +2060,28 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
 
         if is_thanks_message(incoming_msg):
             send_whatsapp_message(raw_from, get_thanks_reply())
+            return
+        
+        # Prevent an expense reference from being interpreted as a new expense.
+        if is_expense_reference_only(incoming_msg):
+            clear_conversation_context(uploader_phone)
+
+            normalized_reference = re.sub(
+                r"[\s_:]+",
+                "-",
+                incoming_msg.strip().upper()
+            )
+
+            send_whatsapp_message(
+                raw_from,
+                (
+                    f"{normalized_reference} is an expense reference.\n\n"
+                    "To delete this expense, send:\n"
+                    f"Delete {normalized_reference}\n\n"
+                    "To restore it from Recently Deleted, send:\n"
+                    f"Restore {normalized_reference}"
+                )
+            )
             return
         
         delete_handled = handle_whatsapp_delete_flow(
