@@ -26,7 +26,6 @@ load_dotenv()
 from receipt_ai import get_client, extract_bill_details
 
 from storage_utils import (
-    init_db,
     append_entry,
     save_image_to_folder,
     ensure_storage,
@@ -54,19 +53,31 @@ _initialized = False
 twilio_client = None
 client = None
 
+_init_lock = threading.Lock()
+
+
 def lazy_init():
     global _initialized, twilio_client, client
 
     if _initialized:
         return
 
-    init_db()
-    ensure_storage()
+    with _init_lock:
+        if _initialized:
+            return
 
-    twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-    client = get_client(OPENAI_API_KEY)
+        ensure_storage()
 
-    _initialized = True
+        twilio_client = TwilioClient(
+            TWILIO_ACCOUNT_SID,
+            TWILIO_AUTH_TOKEN,
+        )
+
+        client = get_client(
+            OPENAI_API_KEY
+        )
+
+        _initialized = True
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")

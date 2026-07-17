@@ -42,8 +42,14 @@ S3_BUCKET_NAME = get_secret_value("S3_BUCKET_NAME")
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
+    pool_size=3,
+    max_overflow=3,
+    pool_timeout=10,
+    pool_recycle=300,
+    connect_args={
+        "connect_timeout": 10,
+        "application_name": "finwise",
+    },
 ) if DATABASE_URL else None
 
 
@@ -322,10 +328,19 @@ def read_sheet(tab_name):
     table = _table_name(tab_name)
 
     try:
-        init_db()
-        return pd.read_sql(f'SELECT * FROM "{table}" ORDER BY id DESC', engine)
-    except Exception as e:
-        print(f"read_sheet error for {table}: {e}")
+        return pd.read_sql(
+            text(
+                f'SELECT * FROM "{table}" '
+                f'ORDER BY id DESC'
+            ),
+            engine,
+        )
+
+    except Exception as exc:
+        print(
+            f"read_sheet error for {table}: {exc}",
+            flush=True,
+        )
         return pd.DataFrame()
 
 
@@ -336,7 +351,6 @@ def write_sheet(tab_name, df):
     table = _table_name(tab_name)
 
     try:
-        init_db()
         df = pd.DataFrame(df)
 
         if df.empty:
@@ -356,23 +370,34 @@ def write_sheet(tab_name, df):
 
 def append_sheet_row(tab_name, row: dict):
     if engine is None:
-        return
+        raise RuntimeError("DATABASE_URL is missing.")
 
     table = _table_name(tab_name)
 
     try:
-        init_db()
-
         df = pd.DataFrame([row])
         df = _sanitize_columns(df)
         df = df.fillna("").astype(str)
 
-        _ensure_table_columns(table, df)
+        # Petpooja uploads can contain changing columns.
+        # Fixed application tables should not run ALTER TABLE.
+        if table == "petpooja_entries":
+            _ensure_table_columns(table, df)
 
-        df.to_sql(table, engine, if_exists="append", index=False)
+        df.to_sql(
+            table,
+            engine,
+            if_exists="append",
+            index=False,
+            method="multi",
+        )
 
-    except Exception as e:
-        print(f"append_sheet_row error for {table}: {e}")
+    except Exception as exc:
+        print(
+            f"append_sheet_row error for {table}: {exc}",
+            flush=True,
+        )
+        raise
 
 
 def safe_name(value: str) -> str:
@@ -522,7 +547,7 @@ def load_entries_for_user(user_phone, limit=500):
         return pd.DataFrame()
 
     try:
-        init_db()
+        
 
         phone_clean = clean_phone(user_phone)
 
@@ -1274,7 +1299,6 @@ def soft_delete_entry(
     if engine is None:
         return 0
 
-    ensure_recycle_bin_columns()
 
     with engine.begin() as conn:
         result = conn.execute(
@@ -1309,7 +1333,6 @@ def soft_delete_entries_by_ids(
     if engine is None or not entry_ids:
         return 0
 
-    ensure_recycle_bin_columns()
 
     cleaned_ids = [
         str(entry_id).strip()
@@ -1348,7 +1371,6 @@ def load_recently_deleted_entries(owner_phone, limit=500):
     if engine is None:
         return pd.DataFrame()
 
-    ensure_recycle_bin_columns()
 
     try:
         return pd.read_sql(
@@ -1401,7 +1423,6 @@ def restore_deleted_entry(entry_id, owner_phone):
     if engine is None:
         return 0
 
-    ensure_recycle_bin_columns()
 
     with engine.begin() as conn:
         result = conn.execute(
@@ -1429,7 +1450,6 @@ def permanently_delete_entry(entry_id, owner_phone):
     if engine is None:
         return 0
 
-    ensure_recycle_bin_columns()
 
     with engine.begin() as conn:
         result = conn.execute(
@@ -1455,7 +1475,6 @@ def purge_expired_deleted_entries():
     if engine is None:
         return 0
 
-    ensure_recycle_bin_columns()
 
     with engine.begin() as conn:
         result = conn.execute(
@@ -1553,7 +1572,8 @@ def init_income_table():
         """))
 
 def append_income_entry(entry):
-    init_income_table()
+    if engine is None:
+        raise RuntimeError("DATABASE_URL is missing.")
 
     with engine.begin() as conn:
         result = conn.execute(
@@ -1616,8 +1636,8 @@ def load_income_entries_for_user(
     end_date=None,
     limit=500
 ):
-    init_income_table()
-
+    if engine is None:
+        return pd.DataFrame()
     filters = [
         "user_phone = :user_phone"
     ]
@@ -1671,8 +1691,8 @@ def get_manual_income_total_for_user(
     start_date=None,
     end_date=None
 ):
-    init_income_table()
-
+    if engine is None:
+        return 0.0
     filters = [
         "user_phone = :user_phone"
     ]

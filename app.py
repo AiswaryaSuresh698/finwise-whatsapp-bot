@@ -10,6 +10,7 @@ import streamlit as st
 from twilio.rest import Client
 from dotenv import load_dotenv
 import calendar
+from sqlalchemy import text
 
 from storage_utils import (
     DEFAULT_FOLDERS,
@@ -26,7 +27,6 @@ from storage_utils import (
     get_presigned_s3_url,
     append_petpooja_entry,
     append_entry,
-    init_db,
     load_entries_for_user,
     update_entry_by_id,
     delete_entry_by_id,
@@ -50,7 +50,6 @@ from storage_utils import (
     purge_expired_deleted_entries,
     get_entry_by_reference,
     soft_delete_entry,
-    init_income_table,
     append_income_entry,
     load_income_entries_for_user,
     get_manual_income_total_for_user,
@@ -59,6 +58,7 @@ from storage_utils import (
     compare_expense_categories_for_user,
     update_income_entry_by_id,
     soft_delete_income_entry,
+    engine,
 )
 
 load_dotenv()
@@ -77,21 +77,56 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-@st.cache_resource
-def initialize_database():
-    init_db()
-    init_income_table()
-    return True
+@st.cache_resource(show_spinner=False)
+def check_database_connection():
+    """
+    Checks PostgreSQL connectivity once per Streamlit process.
+    It does not create or alter database tables.
+    """
+    if engine is None:
+        return False, "DATABASE_URL is missing."
 
-initialize_database()
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+
+        return True, ""
+
+    except Exception as exc:
+        return False, str(exc)
+
+
+database_ready, database_error = check_database_connection()
+
+if not database_ready:
+    st.error(
+        "FinWise cannot connect to the database right now."
+    )
+
+    print(
+        "DATABASE CONNECTION ERROR:",
+        database_error,
+        flush=True,
+    )
+
+    st.stop()
 
 @st.cache_data(ttl=300)
 def cached_load_entries():
     return load_entries()
 
-@st.cache_data(ttl=30)
-def cached_load_entries_for_user(phone, limit=100):
-    return load_entries_for_user(phone, limit)
+@st.cache_data(
+    ttl=180,
+    show_spinner=False,
+)
+def cached_load_entries_for_user(
+    phone,
+    limit=100,
+):
+    return load_entries_for_user(
+        phone,
+        limit,
+    )
     
 
 @st.cache_data(ttl=300)
@@ -1292,25 +1327,8 @@ if screen == "📊 Dashboard":
     # are not excluded because of an older bill date.
     df = cached_load_entries_for_user(
         phone,
-        limit=1000
+        limit=st.session_state.expense_limit,
     )
-
-    # Always show the newest database records first.
-    if not df.empty and "id" in df.columns:
-        df["id"] = pd.to_numeric(
-            df["id"],
-            errors="coerce"
-        )
-
-        df = (
-            df
-            .sort_values(
-                by="id",
-                ascending=False
-            )
-            .head(st.session_state.expense_limit)
-            .copy()
-        )
     if not df.empty and "is_deleted" in df.columns:
         deleted_values = (
             df["is_deleted"]
@@ -1340,15 +1358,19 @@ if screen == "📊 Dashboard":
     col_more, col_all = st.columns(2)
 
     with col_more:
-        if st.button("Load 100 more bills", use_container_width=True):
+        if st.button(
+            "Load 100 more bills",
+            use_container_width=True,
+        ):
             st.session_state.expense_limit += 100
-            st.cache_data.clear()
             st.rerun()
 
     with col_all:
-        if st.button("Show all bills", use_container_width=True):
-            st.session_state.expense_limit = 5000
-            st.cache_data.clear()
+        if st.button(
+            "Show up to 1,000 bills",
+            use_container_width=True,
+        ):
+            st.session_state.expense_limit = 1000
             st.rerun()
         
 
