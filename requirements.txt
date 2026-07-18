@@ -15,3 +15,6 @@ google-auth
 sqlalchemy
 psycopg2-binary
 boto3
+pandas
+openpyxl
+xlrd==2.0.1
