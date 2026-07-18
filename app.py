@@ -1842,38 +1842,109 @@ if screen == "📊 Dashboard":
             f"₹{manual_income_total:,.2f}"
         )
 
-    # Upload Petpooja first, then reload saved file
+    # Upload Petpooja first, then process only after button click
     st.write("### Upload Petpooja Daily/Monthly Sales Summary")
-    uploaded_sales_file = st.file_uploader("Upload Petpooja Daily/Monthly Sales Summary", type=["xls", "xlsx", "html"])
+
+    uploaded_sales_file = st.file_uploader(
+        "Upload Petpooja Daily/Monthly Sales Summary",
+        type=["xls", "xlsx", "html"],
+        key="petpooja_sales_upload",
+    )
 
     if uploaded_sales_file is not None:
-        try:
-            raw_sales_df = read_petpooja_file(uploaded_sales_file)
-            petpooja_report_df = build_petpooja_report_df(raw_sales_df)
+        st.caption(
+            f"Selected file: {uploaded_sales_file.name} "
+            f"({uploaded_sales_file.size / 1024:.1f} KB)"
+        )
 
-            if petpooja_report_df.empty:
-                st.warning("Could not find Petpooja order rows in this report.")
-            else:
-                petpooja_report_df["user_phone"] = clean_phone(phone)
-                petpooja_report_df["duplicate_key"] = petpooja_report_df.apply(
-                    lambda row: make_petpooja_duplicate_key(row, phone), axis=1
+        process_petpooja_file = st.button(
+            "Process Petpooja Report",
+            type="primary",
+            key="process_petpooja_report_button",
+        )
+
+        if process_petpooja_file:
+            try:
+                with st.spinner("Reading and importing Petpooja report..."):
+                    raw_sales_df = read_petpooja_file(
+                        uploaded_sales_file
+                    )
+
+                    petpooja_report_df = build_petpooja_report_df(
+                        raw_sales_df
+                    )
+
+                    if petpooja_report_df.empty:
+                        st.warning(
+                            "Could not find Petpooja order rows "
+                            "in this report."
+                        )
+                    else:
+                        petpooja_report_df["user_phone"] = (
+                            clean_phone(phone)
+                        )
+
+                        petpooja_report_df["duplicate_key"] = (
+                            petpooja_report_df.apply(
+                                lambda row: make_petpooja_duplicate_key(
+                                    row,
+                                    phone,
+                                ),
+                                axis=1,
+                            )
+                        )
+
+                        existing_petpooja_df = (
+                            normalize_saved_petpooja_df(
+                                load_petpooja_entries()
+                            )
+                        )
+
+                        if (
+                            not existing_petpooja_df.empty
+                            and "duplicate_key"
+                            in existing_petpooja_df.columns
+                        ):
+                            existing_keys = set(
+                                existing_petpooja_df[
+                                    "duplicate_key"
+                                ].astype(str)
+                            )
+                        else:
+                            existing_keys = set()
+
+                        new_petpooja_df = petpooja_report_df[
+                            ~petpooja_report_df[
+                                "duplicate_key"
+                            ].astype(str).isin(existing_keys)
+                        ].copy()
+
+                        duplicate_count = (
+                            len(petpooja_report_df)
+                            - len(new_petpooja_df)
+                        )
+
+                        if not new_petpooja_df.empty:
+                            for _, row in (
+                                new_petpooja_df.iterrows()
+                            ):
+                                append_petpooja_entry(
+                                    row.to_dict()
+                                )
+
+                        st.success(
+                            "Petpooja processed. "
+                            f"Added {len(new_petpooja_df)} "
+                            "new records. "
+                            f"Skipped {duplicate_count} duplicates."
+                        )
+
+                        st.cache_data.clear()
+
+            except Exception as e:
+                st.error(
+                    f"Could not read Petpooja file: {e}"
                 )
-
-                existing_petpooja_df = normalize_saved_petpooja_df(load_petpooja_entries())
-                existing_keys = set(existing_petpooja_df["duplicate_key"].astype(str)) if not existing_petpooja_df.empty and "duplicate_key" in existing_petpooja_df.columns else set()
-
-                new_petpooja_df = petpooja_report_df[
-                    ~petpooja_report_df["duplicate_key"].astype(str).isin(existing_keys)
-                ].copy()
-                duplicate_count = len(petpooja_report_df) - len(new_petpooja_df)
-
-                if not new_petpooja_df.empty:
-                    for _, row in new_petpooja_df.iterrows():
-                        append_petpooja_entry(row.to_dict())
-
-                st.success(f"Petpooja processed. Added {len(new_petpooja_df)} new records. Skipped {duplicate_count} duplicates.")
-        except Exception as e:
-            st.error(f"Could not read Petpooja file: {e}")
 
     if not petpooja_saved_df.empty:
         payment_summary = (
