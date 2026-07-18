@@ -215,20 +215,114 @@ def cached_month_category_comparison(
 # Helpers
 # -----------------------------
 def read_petpooja_file(uploaded_file):
-    file_name = uploaded_file.name.lower()
+    """
+    Reads:
+    - Genuine Excel 97-2003 .xls files
+    - Modern .xlsx files
+    - Petpooja HTML reports saved with an .xls extension
+    """
+
+    file_name = uploaded_file.name.lower().strip()
+    file_bytes = uploaded_file.getvalue()
+
+    if not file_bytes:
+        raise Exception("The uploaded Petpooja file is empty.")
+
     try:
+        # Modern XLSX file
+        # XLSX files are ZIP files and normally begin with PK.
+        if file_bytes.startswith(b"PK"):
+            return pd.read_excel(
+                BytesIO(file_bytes),
+                engine="openpyxl",
+                header=None,
+            )
+
+        # Genuine Microsoft Excel 97-2003 binary XLS file
+        if file_bytes.startswith(b"\xD0\xCF\x11\xE0"):
+            return pd.read_excel(
+                BytesIO(file_bytes),
+                engine="xlrd",
+                header=None,
+            )
+
+        # Petpooja often exports an HTML table with an .xls extension
+        file_start = file_bytes[:10000].lower()
+
+        if (
+            b"<html" in file_start
+            or b"<table" in file_start
+            or b"<!doctype html" in file_start
+        ):
+            tables = pd.read_html(
+                BytesIO(file_bytes),
+                flavor="lxml",
+                header=None,
+            )
+
+            if not tables:
+                raise Exception(
+                    "No table was found in the Petpooja report."
+                )
+
+            # Return the largest table in the report
+            return max(
+                tables,
+                key=lambda table: table.shape[0] * table.shape[1]
+            )
+
+        # Extension-based fallback
         if file_name.endswith(".xlsx"):
-            return pd.read_excel(uploaded_file, engine="openpyxl", header=None)
+            return pd.read_excel(
+                BytesIO(file_bytes),
+                engine="openpyxl",
+                header=None,
+            )
+
         if file_name.endswith(".xls"):
             try:
-                return pd.read_excel(uploaded_file, engine="xlrd", header=None)
+                return pd.read_excel(
+                    BytesIO(file_bytes),
+                    engine="xlrd",
+                    header=None,
+                )
             except Exception:
-                uploaded_file.seek(0)
-                return pd.read_html(uploaded_file)[0]
-        uploaded_file.seek(0)
-        return pd.read_html(uploaded_file)[0]
+                tables = pd.read_html(
+                    BytesIO(file_bytes),
+                    flavor="lxml",
+                    header=None,
+                )
+
+                if tables:
+                    return max(
+                        tables,
+                        key=lambda table: (
+                            table.shape[0] * table.shape[1]
+                        )
+                    )
+
+        if file_name.endswith((".html", ".htm")):
+            tables = pd.read_html(
+                BytesIO(file_bytes),
+                flavor="lxml",
+                header=None,
+            )
+
+            if tables:
+                return max(
+                    tables,
+                    key=lambda table: (
+                        table.shape[0] * table.shape[1]
+                    )
+                )
+
+        raise Exception(
+            "Unsupported Petpooja report format. "
+            "Please upload the original XLS, XLSX or HTML report."
+        )
+
     except Exception as e:
-        raise Exception(f"Could not read Petpooja file: {e}")
+        raise Exception(str(e)) from e
 
 
 def build_petpooja_report_df(raw_df):
