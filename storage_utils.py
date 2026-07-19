@@ -432,6 +432,59 @@ def hash_password(password: str) -> str:
 def normalize_vendor(vendor):
     return str(vendor or "").strip().lower()
 
+CATEGORY_ALIASES = {
+    "chicken": "Chicken",
+    "chickens": "Chicken",
+    "chicken expense": "Chicken",
+    "chicken expenses": "Chicken",
+
+    "milk": "Milk",
+    "milks": "Milk",
+
+    "egg": "Egg",
+    "eggs": "Egg",
+
+    "grocery": "Grocery",
+    "groceries": "Grocery",
+
+    "rice": "Rice",
+    "rices": "Rice",
+
+    "frozen": "Frozen",
+    "frozen item": "Frozen",
+    "frozen items": "Frozen",
+
+    "mutton": "Mutton",
+    "muttons": "Mutton",
+
+    "utility": "Utilities",
+    "utilities": "Utilities",
+
+    "meal": "Meals",
+    "meals": "Meals",
+
+    "software": "Software",
+    "softwares": "Software",
+}
+
+
+def normalize_category(category):
+    value = str(category or "").strip()
+
+    if not value:
+        return "Uncategorized"
+
+    normalized_key = re.sub(
+        r"\s+",
+        " ",
+        value.lower()
+    ).strip()
+
+    if normalized_key in CATEGORY_ALIASES:
+        return CATEGORY_ALIASES[normalized_key]
+
+    # Standard capitalization for unknown custom categories
+    return value.title()
 
 def make_vendor_memory_key(user_phone, vendor):
     return f"{clean_phone(user_phone)}|{normalize_vendor(vendor)}"
@@ -591,7 +644,19 @@ def save_entries(df):
 
 
 def append_entry(entry):
-    append_sheet_row("entries", entry)
+    entry = dict(entry)
+
+    normalized_category = normalize_category(
+        entry.get("category", "")
+    )
+
+    entry["category"] = normalized_category
+    entry["folder"] = normalized_category
+
+    append_sheet_row(
+        "entries",
+        entry
+    )
 
 
 def load_users():
@@ -734,6 +799,8 @@ def save_vendor_rules(df):
 def update_vendor_memory(user_phone, vendor, category, folder):
     if not vendor or not category:
         return
+    category = normalize_category(category)
+    folder = normalize_category(folder or category)
 
     rules_df = load_vendor_rules()
 

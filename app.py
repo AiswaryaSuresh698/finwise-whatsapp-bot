@@ -66,6 +66,7 @@ from storage_utils import (
     load_petpooja_reports_for_user,
     delete_petpooja_report,
     append_petpooja_report,
+    normalize_category,
 )
 
 load_dotenv()
@@ -2274,8 +2275,8 @@ if screen == "📊 Dashboard":
                     "user_phone": clean_phone(phone),
                     "uploaded_by": clean_phone(phone),
                     "description": manual_description.strip() or manual_vendor.strip(),
-                    "category": manual_category,
-                    "folder": manual_category,
+                    "category": normalize_category(manual_category),
+                    "folder": normalize_category(manual_category),
                     "subtotal": float(manual_amount),
                     "tax": 0,
                     "total": float(manual_amount),
@@ -2291,8 +2292,8 @@ if screen == "📊 Dashboard":
                 update_vendor_memory(
                     user_phone=phone,
                     vendor=manual_vendor.strip().title(),
-                    category=manual_category,
-                    folder=manual_category,
+                    category=normalize_category(manual_category),
+                    folder=normalize_category(manual_category),
                 )
 
                 st.success("Manual expense added successfully.")
@@ -2422,7 +2423,7 @@ if screen == "📊 Dashboard":
 
                 original_row = original_lookup.loc[entry_id]
 
-                new_category = str(row.get("Category", "")).strip()
+                new_category = normalize_category(row.get("Category", ""))
                 new_vendor = str(row.get("Vendor", "")).strip()
                 new_description = str(row.get("Description", "")).strip()
                 new_amount = float(pd.to_numeric(row.get("Amount", 0), errors="coerce") or 0)
