@@ -14,6 +14,7 @@ from twilio.rest import Client
 from dotenv import load_dotenv
 import calendar
 from sqlalchemy import text
+import matplotlib.pyplot as plt
 
 from storage_utils import (
     DEFAULT_FOLDERS,
@@ -1098,6 +1099,208 @@ def month_has_data(row):
         float(row.get("expense", 0) or 0) != 0,
         int(row.get("bill_count", 0) or 0) != 0,
     ])
+
+def prepare_expense_pie_data(
+    category_comparison_df,
+    amount_column,
+    max_categories=7,
+):
+    """
+    Prepares category expense data for one monthly pie chart.
+
+    - Combines category names that differ only by capitalization.
+    - Keeps the largest categories.
+    - Groups remaining categories into Other.
+    """
+
+    if (
+        category_comparison_df is None
+        or category_comparison_df.empty
+        or amount_column not in category_comparison_df.columns
+    ):
+        return pd.DataFrame(
+            columns=["category", "amount"]
+        )
+
+    pie_df = category_comparison_df[
+        ["category", amount_column]
+    ].copy()
+
+    pie_df["category"] = (
+        pie_df["category"]
+        .fillna("Uncategorized")
+        .astype(str)
+        .str.strip()
+        .replace("", "Uncategorized")
+        .str.lower()
+        .str.title()
+    )
+
+    pie_df["amount"] = pd.to_numeric(
+        pie_df[amount_column],
+        errors="coerce",
+    ).fillna(0)
+
+    pie_df = pie_df[
+        pie_df["amount"] > 0
+    ].copy()
+
+    if pie_df.empty:
+        return pd.DataFrame(
+            columns=["category", "amount"]
+        )
+
+    # Combine duplicates such as Mutton and mutton.
+    pie_df = (
+        pie_df.groupby(
+            "category",
+            as_index=False,
+        )["amount"]
+        .sum()
+        .sort_values(
+            "amount",
+            ascending=False,
+        )
+        .reset_index(drop=True)
+    )
+
+    if len(pie_df) > max_categories:
+        top_df = pie_df.head(
+            max_categories
+        ).copy()
+
+        other_amount = float(
+            pie_df.iloc[
+                max_categories:
+            ]["amount"].sum()
+        )
+
+        if other_amount > 0:
+            other_row = pd.DataFrame([
+                {
+                    "category": "Other",
+                    "amount": other_amount,
+                }
+            ])
+
+            pie_df = pd.concat(
+                [top_df, other_row],
+                ignore_index=True,
+            )
+        else:
+            pie_df = top_df
+
+    return pie_df
+
+def create_expense_pie_chart(
+    pie_df,
+    month_name,
+    year,
+):
+    """
+    Creates one category expense donut chart.
+    """
+
+    fig, ax = plt.subplots(
+        figsize=(7, 6)
+    )
+
+    if pie_df.empty:
+        ax.text(
+            0.5,
+            0.5,
+            "No expense data",
+            horizontalalignment="center",
+            verticalalignment="center",
+            fontsize=15,
+        )
+
+        ax.axis("off")
+
+        ax.set_title(
+            f"{month_name} {year}",
+            fontsize=16,
+            fontweight="bold",
+        )
+
+        return fig
+
+    amounts = pie_df["amount"].tolist()
+    categories = pie_df["category"].tolist()
+
+    total_amount = float(
+        pie_df["amount"].sum()
+    )
+
+    def show_percentage(percentage):
+        # Avoid clutter from very small slices.
+        if percentage < 3:
+            return ""
+
+        return f"{percentage:.1f}%"
+
+    wedges, _, _ = ax.pie(
+        amounts,
+        labels=None,
+        autopct=show_percentage,
+        startangle=90,
+        pctdistance=0.78,
+        wedgeprops={
+            "width": 0.45,
+            "edgecolor": "white",
+        },
+        textprops={
+            "fontsize": 10,
+        },
+    )
+
+    ax.text(
+        0,
+        0.08,
+        f"{month_name}",
+        horizontalalignment="center",
+        verticalalignment="center",
+        fontsize=14,
+        fontweight="bold",
+    )
+
+    ax.text(
+        0,
+        -0.10,
+        f"₹{total_amount:,.0f}",
+        horizontalalignment="center",
+        verticalalignment="center",
+        fontsize=13,
+    )
+
+    legend_labels = [
+        f"{category}: ₹{amount:,.0f}"
+        for category, amount in zip(
+            categories,
+            amounts,
+        )
+    ]
+
+    ax.legend(
+        wedges,
+        legend_labels,
+        title="Expense Categories",
+        loc="center left",
+        bbox_to_anchor=(1, 0.5),
+        fontsize=9,
+    )
+
+    ax.set_title(
+        f"{month_name} {year}",
+        fontsize=16,
+        fontweight="bold",
+        pad=18,
+    )
+
+    ax.axis("equal")
+    fig.tight_layout()
+
+    return fig
 
 def mobile_table_html(df):
     return df.to_html(index=False, escape=False)
@@ -4009,75 +4212,13 @@ elif screen == "📈 Month-over-Month Analysis":
                 )
 
                 st.markdown(
-                    "### ✨ AI Comparison Summary"
+                    "### Expense Category Comparison"
                 )
 
-                summary_col1, summary_col2, \
-                    summary_col3, summary_col4 = (
-                        st.columns(4)
-                    )
-
-                def show_comparison_metric(
-                    column,
-                    title,
-                    current_value,
-                    change,
-                    prefix="₹",
-                ):
-                    with column:
-                        if change is None:
-                            delta_text = "New"
-                        else:
-                            delta_text = (
-                                f"{change:+.1f}%"
-                            )
-
-                        st.metric(
-                            title,
-                            (
-                                f"{prefix}"
-                                f"{current_value:,.2f}"
-                            ),
-                            delta=delta_text,
-                        )
-
-                show_comparison_metric(
-                    summary_col1,
-                    "Income",
-                    float(
-                        comparison_row[
-                            "total_income"
-                        ]
-                    ),
-                    income_change,
-                )
-
-                show_comparison_metric(
-                    summary_col2,
-                    "Expenses",
-                    float(
-                        comparison_row["expense"]
-                    ),
-                    expense_change,
-                )
-
-                show_comparison_metric(
-                    summary_col3,
-                    "Net",
-                    float(comparison_row["net"]),
-                    net_change,
-                )
-
-                show_comparison_metric(
-                    summary_col4,
-                    "Bills",
-                    float(
-                        comparison_row[
-                            "bill_count"
-                        ]
-                    ),
-                    bills_change,
-                    prefix="",
+                st.caption(
+                    f"See how spending was distributed across "
+                    f"categories in {base_month_name} and "
+                    f"{comparison_month_name}."
                 )
 
                 category_comparison_df = (
@@ -4090,6 +4231,69 @@ elif screen == "📈 Month-over-Month Analysis":
                         ),
                     )
                 )
+
+                base_pie_df = prepare_expense_pie_data(
+                    category_comparison_df=(
+                        category_comparison_df
+                    ),
+                    amount_column="base_amount",
+                )
+
+                comparison_pie_df = prepare_expense_pie_data(
+                    category_comparison_df=(
+                        category_comparison_df
+                    ),
+                    amount_column="comparison_amount",
+                )
+
+                base_chart_column, comparison_chart_column = (
+                    st.columns(2)
+                )
+
+                with base_chart_column:
+                    with st.container(border=True):
+                        base_figure = create_expense_pie_chart(
+                            pie_df=base_pie_df,
+                            month_name=base_month_name,
+                            year=selected_year,
+                        )
+
+                        st.pyplot(
+                            base_figure,
+                            width="stretch",
+                        )
+
+                        plt.close(base_figure)
+
+                        st.caption(
+                            f"Total expenses: "
+                            f"₹{float(base_row['expense']):,.2f}"
+                        )
+
+                with comparison_chart_column:
+                    with st.container(border=True):
+                        comparison_figure = (
+                            create_expense_pie_chart(
+                                pie_df=comparison_pie_df,
+                                month_name=(
+                                    comparison_month_name
+                                ),
+                                year=selected_year,
+                            )
+                        )
+
+                        st.pyplot(
+                            comparison_figure,
+                            width="stretch",
+                        )
+
+                        plt.close(comparison_figure)
+
+                        st.caption(
+                            f"Total expenses: "
+                            f"₹{float(comparison_row['expense']):,.2f}"
+                        )
+            
 
                 st.markdown(
                     "### AI Detailed Insights"
