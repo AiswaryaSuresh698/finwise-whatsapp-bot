@@ -62,6 +62,7 @@ from storage_utils import (
     engine,
     load_petpooja_reports_for_user,
     delete_petpooja_report,
+    append_petpooja_report,
 )
 
 load_dotenv()
@@ -1845,7 +1846,8 @@ if screen == "📊 Dashboard":
             f"₹{manual_income_total:,.2f}"
         )
 
-    # Upload Petpooja first, then process only after button click
+
+    # Upload, preview and then save Petpooja report
     st.write("### Upload Petpooja Daily/Monthly Sales Summary")
 
     uploaded_sales_file = st.file_uploader(
@@ -1860,53 +1862,148 @@ if screen == "📊 Dashboard":
             f"({uploaded_sales_file.size / 1024:.1f} KB)"
         )
 
-        process_petpooja_file = st.button(
-            "Process Petpooja Report",
+        if st.button(
+            "Preview Petpooja Report",
             type="primary",
-            key="process_petpooja_report_button",
-        )
-
-        if process_petpooja_file:
+            key="preview_petpooja_report_button",
+        ):
             try:
-                with st.spinner("Reading and importing Petpooja report..."):
+                with st.spinner("Reading Petpooja report..."):
                     raw_sales_df = read_petpooja_file(
                         uploaded_sales_file
                     )
 
-                    petpooja_report_df = build_petpooja_report_df(
+                    preview_df = build_petpooja_report_df(
                         raw_sales_df
                     )
 
-                    if petpooja_report_df.empty:
-                        st.warning(
-                            "Could not find Petpooja order rows "
-                            "in this report."
-                        )
-                    else:
-                        petpooja_report_df["user_phone"] = (
-                            clean_phone(phone)
-                        
-                        )
-                        report_id = uuid.uuid4().hex
+                if preview_df.empty:
+                    st.warning(
+                        "Could not find Petpooja order rows "
+                        "in this report."
+                    )
 
-                        petpooja_report_df["report_id"] = report_id
-                        petpooja_report_df["source_filename"] = (
-                            uploaded_sales_file.name
-                        )
+                else:
+                    preview_df["user_phone"] = clean_phone(
+                        phone
+                    )
 
-                        petpooja_report_df["duplicate_key"] = (
-                            petpooja_report_df.apply(
-                                lambda row: make_petpooja_duplicate_key(
-                                    row,
-                                    phone,
-                                ),
-                                axis=1,
-                            )
-                        )
+                    preview_report_id = uuid.uuid4().hex
 
+                    preview_df["report_id"] = (
+                        preview_report_id
+                    )
+
+                    preview_df["source_filename"] = (
+                        uploaded_sales_file.name
+                    )
+
+                    preview_df["duplicate_key"] = (
+                        preview_df.apply(
+                            lambda row: make_petpooja_duplicate_key(
+                                row,
+                                phone,
+                            ),
+                            axis=1,
+                        )
+                    )
+
+                    st.session_state[
+                        "petpooja_upload_preview"
+                    ] = preview_df
+
+                    st.session_state[
+                        "petpooja_upload_filename"
+                    ] = uploaded_sales_file.name
+
+                    st.success(
+                        f"Report read successfully. "
+                        f"{len(preview_df):,} rows found."
+                    )
+
+            except Exception as e:
+                st.error(
+                    f"Could not read Petpooja file: {e}"
+                )
+
+    petpooja_upload_preview = st.session_state.get(
+    "petpooja_upload_preview"
+    )
+
+    if petpooja_upload_preview is not None:
+        st.write("### Petpooja Report Preview")
+
+        preview_columns = [
+            "Order No.",
+            "Date",
+            "Payment Type",
+            "Order Type",
+            "My Amount",
+            "Discount",
+            "Total",
+            "Biller Name",
+        ]
+
+        available_preview_columns = [
+            column
+            for column in preview_columns
+            if column in petpooja_upload_preview.columns
+        ]
+
+        if available_preview_columns:
+            st.dataframe(
+                petpooja_upload_preview[
+                    available_preview_columns
+                ].head(100),
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.warning(
+                "The report was read, but preview columns "
+                "could not be identified."
+            )
+
+        preview_total = float(
+            pd.to_numeric(
+                petpooja_upload_preview[
+                    "petpooja_total"
+                ],
+                errors="coerce",
+            ).fillna(0).sum()
+        )
+
+        preview_col1, preview_col2 = st.columns(2)
+
+        with preview_col1:
+            st.metric(
+                "Orders detected",
+                f"{len(petpooja_upload_preview):,}"
+            )
+
+        with preview_col2:
+            st.metric(
+                "Report total",
+                f"₹{preview_total:,.2f}"
+            )
+
+        save_col, cancel_col = st.columns(2)
+
+        with save_col:
+            if st.button(
+                "Save Petpooja Report",
+                type="primary",
+                width="stretch",
+                key="save_petpooja_report_button",
+            ):
+                try:
+                    with st.spinner(
+                        "Saving Petpooja report..."
+                    ):
                         existing_petpooja_df = (
-                            normalize_saved_petpooja_df(
-                                load_petpooja_entries()
+                            load_petpooja_entries_for_user(
+                                phone,
+                                limit=10000,
                             )
                         )
 
@@ -1923,38 +2020,74 @@ if screen == "📊 Dashboard":
                         else:
                             existing_keys = set()
 
-                        new_petpooja_df = petpooja_report_df[
-                            ~petpooja_report_df[
-                                "duplicate_key"
-                            ].astype(str).isin(existing_keys)
-                        ].copy()
+                        new_petpooja_df = (
+                            petpooja_upload_preview[
+                                ~petpooja_upload_preview[
+                                    "duplicate_key"
+                                ].astype(str).isin(
+                                    existing_keys
+                                )
+                            ].copy()
+                        )
 
                         duplicate_count = (
-                            len(petpooja_report_df)
+                            len(petpooja_upload_preview)
                             - len(new_petpooja_df)
                         )
 
+                        inserted_count = 0
+
                         if not new_petpooja_df.empty:
-                            for _, row in (
-                                new_petpooja_df.iterrows()
-                            ):
-                                append_petpooja_entry(
-                                    row.to_dict()
+                            inserted_count = (
+                                append_petpooja_report(
+                                    new_petpooja_df
                                 )
+                            )
 
-                        st.success(
-                            "Petpooja processed. "
-                            f"Added {len(new_petpooja_df)} "
-                            "new records. "
-                            f"Skipped {duplicate_count} duplicates."
-                        )
+                    st.session_state.pop(
+                        "petpooja_upload_preview",
+                        None,
+                    )
 
-                        st.cache_data.clear()
+                    st.session_state.pop(
+                        "petpooja_upload_filename",
+                        None,
+                    )
 
-            except Exception as e:
-                st.error(
-                    f"Could not read Petpooja file: {e}"
+                    st.cache_data.clear()
+
+                    st.success(
+                        f"Report saved. Added "
+                        f"{inserted_count:,} records. "
+                        f"Skipped {duplicate_count:,} "
+                        f"duplicates."
+                    )
+
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(
+                        f"Could not save Petpooja report: {e}"
+                    )
+
+        with cancel_col:
+            if st.button(
+                "Cancel Preview",
+                width="stretch",
+                key="cancel_petpooja_preview_button",
+            ):
+                st.session_state.pop(
+                    "petpooja_upload_preview",
+                    None,
                 )
+
+                st.session_state.pop(
+                    "petpooja_upload_filename",
+                    None,
+                )
+
+                st.rerun()          
+    
 
     if not petpooja_saved_df.empty:
         payment_summary = (

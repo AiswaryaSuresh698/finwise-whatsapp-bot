@@ -794,6 +794,38 @@ def save_petpooja_entries(df):
 def append_petpooja_entry(entry):
     append_sheet_row("petpooja_entries", entry)
 
+def append_petpooja_report(df):
+    """
+    Saves all rows from one Petpooja report in one database operation.
+    """
+
+    if engine is None:
+        raise RuntimeError("DATABASE_URL is missing.")
+
+    df = pd.DataFrame(df)
+
+    if df.empty:
+        return 0
+
+    df = _sanitize_columns(df)
+    df = df.fillna("").astype(str)
+
+    _ensure_table_columns(
+        "petpooja_entries",
+        df
+    )
+
+    df.to_sql(
+        "petpooja_entries",
+        engine,
+        if_exists="append",
+        index=False,
+        method="multi",
+        chunksize=500,
+    )
+
+    return len(df)
+
 
 def load_restaurant_uploaders():
     df = read_sheet("restaurant_uploaders")
