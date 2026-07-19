@@ -4,6 +4,8 @@ import time
 from io import BytesIO
 from datetime import date, timedelta
 import uuid
+import json
+from openai import OpenAI
 
 import pandas as pd
 import qrcode
@@ -327,7 +329,497 @@ def read_petpooja_file(uploaded_file):
 
     except Exception as e:
         raise Exception(str(e)) from e
+    
+@st.cache_resource(show_spinner=False)
+def get_finwise_openai_client():
+    api_key = os.getenv("OPENAI_API_KEY")
 
+    if not api_key:
+        try:
+            api_key = st.secrets.get(
+                "OPENAI_API_KEY"
+            )
+        except Exception:
+            api_key = None
+
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is missing."
+        )
+
+    return OpenAI(api_key=api_key)
+
+def build_finwise_chat_context(
+    phone,
+    selected_year,
+    base_month,
+    comparison_month,
+    monthly_df,
+    category_comparison_df,
+):
+    """
+    Builds a compact financial context for the chatbot.
+
+    The chatbot receives only data belonging to the
+    currently logged-in phone number.
+    """
+
+    phone_clean = clean_phone(phone)
+
+    # ---------------------------------
+    # Monthly totals for selected year
+    # ---------------------------------
+    monthly_records = []
+
+    if monthly_df is not None and not monthly_df.empty:
+        for _, row in monthly_df.iterrows():
+            month_number = int(
+                row.get("month_number", 0) or 0
+            )
+
+            if month_number < 1 or month_number > 12:
+                continue
+
+            monthly_records.append({
+                "month_number": month_number,
+                "month_name": calendar.month_name[
+                    month_number
+                ],
+                "income": float(
+                    row.get("total_income", 0) or 0
+                ),
+                "petpooja_income": float(
+                    row.get("petpooja_income", 0) or 0
+                ),
+                "manual_income": float(
+                    row.get("manual_income", 0) or 0
+                ),
+                "other_income": float(
+                    row.get("entries_income", 0) or 0
+                ),
+                "expense": float(
+                    row.get("expense", 0) or 0
+                ),
+                "net": float(
+                    row.get("net", 0) or 0
+                ),
+                "expense_bill_count": int(
+                    row.get("bill_count", 0) or 0
+                ),
+            })
+
+    # ---------------------------------
+    # Category comparison
+    # ---------------------------------
+    category_records = []
+
+    if (
+        category_comparison_df is not None
+        and not category_comparison_df.empty
+    ):
+        for _, row in (
+            category_comparison_df.iterrows()
+        ):
+            category_records.append({
+                "category": str(
+                    row.get(
+                        "category",
+                        "Uncategorized"
+                    )
+                ),
+                "base_amount": float(
+                    row.get("base_amount", 0) or 0
+                ),
+                "comparison_amount": float(
+                    row.get(
+                        "comparison_amount",
+                        0
+                    ) or 0
+                ),
+                "base_bill_count": int(
+                    row.get(
+                        "base_bill_count",
+                        0
+                    ) or 0
+                ),
+                "comparison_bill_count": int(
+                    row.get(
+                        "comparison_bill_count",
+                        0
+                    ) or 0
+                ),
+            })
+
+    # ---------------------------------
+    # Load the owner's expense records
+    # ---------------------------------
+    expenses_df = load_entries_for_user(
+        phone_clean,
+        limit=10000,
+    )
+
+    vendor_summary = []
+    category_summary = []
+    recent_expenses = []
+
+    if not expenses_df.empty:
+        expenses_df = expenses_df.copy()
+
+        if "is_deleted" in expenses_df.columns:
+            deleted_values = (
+                expenses_df["is_deleted"]
+                .fillna("no")
+                .astype(str)
+                .str.strip()
+                .str.lower()
+            )
+
+            expenses_df = expenses_df[
+                ~deleted_values.isin(
+                    ["yes", "true", "1"]
+                )
+            ].copy()
+
+        if "transaction_type" in expenses_df.columns:
+            expenses_df = expenses_df[
+                expenses_df[
+                    "transaction_type"
+                ]
+                .fillna("expense")
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                == "expense"
+            ].copy()
+
+        expenses_df["date_parsed"] = pd.to_datetime(
+            expenses_df.get("date", ""),
+            errors="coerce",
+            dayfirst=False,
+        )
+
+        expenses_df["amount_numeric"] = (
+            pd.to_numeric(
+                expenses_df.get("total", 0),
+                errors="coerce",
+            ).fillna(0)
+        )
+
+        expenses_df["year"] = (
+            expenses_df["date_parsed"].dt.year
+        )
+
+        selected_year_expenses = expenses_df[
+            expenses_df["year"] == int(selected_year)
+        ].copy()
+
+        if not selected_year_expenses.empty:
+            selected_year_expenses["vendor_clean"] = (
+                selected_year_expenses.get(
+                    "vendor",
+                    pd.Series(
+                        index=selected_year_expenses.index,
+                        dtype=str,
+                    )
+                )
+                .fillna("Unknown Vendor")
+                .astype(str)
+                .str.strip()
+                .replace("", "Unknown Vendor")
+            )
+
+            selected_year_expenses[
+                "category_clean"
+            ] = (
+                selected_year_expenses.get(
+                    "category",
+                    pd.Series(
+                        index=selected_year_expenses.index,
+                        dtype=str,
+                    )
+                )
+                .fillna("Uncategorized")
+                .astype(str)
+                .str.strip()
+                .replace("", "Uncategorized")
+                .str.title()
+            )
+
+            vendor_df = (
+                selected_year_expenses
+                .groupby(
+                    "vendor_clean",
+                    as_index=False,
+                )
+                .agg(
+                    amount=(
+                        "amount_numeric",
+                        "sum",
+                    ),
+                    bill_count=(
+                        "amount_numeric",
+                        "size",
+                    ),
+                )
+                .sort_values(
+                    "amount",
+                    ascending=False,
+                )
+                .head(100)
+            )
+
+            vendor_summary = (
+                vendor_df.to_dict("records")
+            )
+
+            category_df = (
+                selected_year_expenses
+                .groupby(
+                    "category_clean",
+                    as_index=False,
+                )
+                .agg(
+                    amount=(
+                        "amount_numeric",
+                        "sum",
+                    ),
+                    bill_count=(
+                        "amount_numeric",
+                        "size",
+                    ),
+                )
+                .sort_values(
+                    "amount",
+                    ascending=False,
+                )
+            )
+
+            category_summary = (
+                category_df.to_dict("records")
+            )
+
+            recent_df = (
+                selected_year_expenses
+                .sort_values(
+                    "date_parsed",
+                    ascending=False,
+                )
+                .head(100)
+            )
+
+            for _, row in recent_df.iterrows():
+                recent_expenses.append({
+                    "date": (
+                        row["date_parsed"]
+                        .strftime("%Y-%m-%d")
+                        if pd.notna(
+                            row["date_parsed"]
+                        )
+                        else str(
+                            row.get("date", "")
+                        )
+                    ),
+                    "vendor": str(
+                        row.get("vendor", "")
+                    ),
+                    "category": str(
+                        row.get("category", "")
+                    ),
+                    "description": str(
+                        row.get("description", "")
+                    ),
+                    "amount": float(
+                        row.get(
+                            "amount_numeric",
+                            0
+                        ) or 0
+                    ),
+                })
+
+    # ---------------------------------
+    # Manual income
+    # ---------------------------------
+    manual_income_df = (
+        load_income_entries_for_user(
+            phone=phone_clean,
+            limit=5000,
+        )
+    )
+
+    manual_income_records = []
+
+    if not manual_income_df.empty:
+        for _, row in (
+            manual_income_df.head(500).iterrows()
+        ):
+            manual_income_records.append({
+                "date": str(
+                    row.get("income_date", "")
+                ),
+                "customer": str(
+                    row.get("customer_name", "")
+                ),
+                "event": str(
+                    row.get("event_name", "")
+                ),
+                "category": str(
+                    row.get(
+                        "income_category",
+                        ""
+                    )
+                ),
+                "amount": float(
+                    pd.to_numeric(
+                        row.get("amount", 0),
+                        errors="coerce",
+                    )
+                    or 0
+                ),
+                "payment_method": str(
+                    row.get(
+                        "payment_method",
+                        ""
+                    )
+                ),
+            })
+
+    return {
+        "account_phone": phone_clean,
+        "selected_year": int(selected_year),
+        "active_comparison": {
+            "base_month_number": int(
+                base_month
+            ),
+            "base_month_name": calendar.month_name[
+                int(base_month)
+            ],
+            "comparison_month_number": int(
+                comparison_month
+            ),
+            "comparison_month_name": (
+                calendar.month_name[
+                    int(comparison_month)
+                ]
+            ),
+        },
+        "monthly_summary": monthly_records,
+        "selected_month_category_comparison": (
+            category_records
+        ),
+        "selected_year_category_summary": (
+            category_summary
+        ),
+        "selected_year_vendor_summary": (
+            vendor_summary
+        ),
+        "recent_expenses": recent_expenses,
+        "manual_income_records": (
+            manual_income_records
+        ),
+        "data_notes": [
+            (
+                "Petpooja sales are included in "
+                "monthly_summary.petpooja_income."
+            ),
+            (
+                "A missing category may mean the "
+                "expense was not uploaded."
+            ),
+            (
+                "The available transaction lists may "
+                "be limited to the configured database "
+                "query limit."
+            ),
+        ],
+    }
+
+def answer_finwise_data_question(
+    question,
+    financial_context,
+    conversation_history=None,
+):
+    client = get_finwise_openai_client()
+
+    conversation_history = (
+        conversation_history or []
+    )
+
+    recent_history = (
+        conversation_history[-8:]
+    )
+
+    system_instructions = """
+You are FinWise, a financial-data assistant for restaurant
+owners and small-business owners.
+
+You must answer using only the financial context supplied
+by the FinWise application.
+
+You can answer questions about:
+- income;
+- Petpooja sales;
+- manual income;
+- expenses;
+- net income or loss;
+- months and month-over-month comparisons;
+- categories;
+- vendors;
+- bill counts;
+- recent transactions;
+- missing or newly appearing expenses;
+- spending trends;
+- possible business observations supported by the data.
+
+Rules:
+1. Never invent an amount, vendor, category, transaction,
+   cause or date.
+2. Clearly state when the supplied data is insufficient.
+3. A missing expense may mean it was not uploaded. Do not
+   state that it was definitely unpaid.
+4. Use Indian rupee formatting such as ₹1,25,000 where
+   practical.
+5. Explain results in clear business language.
+6. Show the important calculations used in the answer.
+7. When comparing negative net values, describe the rupee
+   improvement or decline instead of using a misleading
+   percentage.
+8. Category names differing only by capitalization should
+   be treated as the same category.
+9. Answer the user's exact question first, then provide
+   one useful observation when supported by the data.
+10. Do not reveal phone numbers or internal database details.
+11. If the question is unrelated to the supplied financial
+    data, explain that this chatbot answers FinWise financial
+    questions only.
+"""
+
+    request_payload = {
+        "financial_context": financial_context,
+        "recent_conversation": recent_history,
+        "owner_question": question,
+    }
+
+    response = client.responses.create(
+        model="gpt-4.1-mini",
+        instructions=system_instructions,
+        input=json.dumps(
+            request_payload,
+            default=str,
+            ensure_ascii=False,
+        ),
+    )
+
+    answer = str(
+        response.output_text or ""
+    ).strip()
+
+    if not answer:
+        return (
+            "I could not generate an answer from the "
+            "available FinWise data."
+        )
+
+    return answer
 
 def build_petpooja_report_df(raw_df):
     header_row_index = None
@@ -3907,6 +4399,219 @@ elif screen == "📈 Month-over-Month Analysis":
                     "stored financial data. A missing bill "
                     "may mean that the bill was not uploaded."
                 )
+
+                st.divider()
+
+                st.markdown(
+                    "### 💬 Ask FinWise About Your Data"
+                )
+
+                st.caption(
+                    "Ask about income, expenses, vendors, "
+                    "categories, Petpooja sales, missing "
+                    "bills or month-over-month changes."
+                )
+
+                comparison_chat_key = (
+                    f"finwise_chat_"
+                    f"{clean_phone(phone)}_"
+                    f"{selected_year}_"
+                    f"{active_base_month}_"
+                    f"{active_comparison_month}"
+                )
+
+                if (
+                    comparison_chat_key
+                    not in st.session_state
+                ):
+                    st.session_state[
+                        comparison_chat_key
+                    ] = []
+
+                chat_messages = (
+                    st.session_state[
+                        comparison_chat_key
+                    ]
+                )
+
+                suggestion_col1, suggestion_col2, \
+                    suggestion_col3 = st.columns(3)
+
+                suggested_question = None
+
+                with suggestion_col1:
+                    if st.button(
+                        "Why did expenses change?",
+                        key=(
+                            "ask_expense_change_"
+                            f"{selected_year}_"
+                            f"{active_base_month}_"
+                            f"{active_comparison_month}"
+                        ),
+                        width="stretch",
+                    ):
+                        suggested_question = (
+                            "Why did expenses change "
+                            f"from {base_month_name} "
+                            f"to {comparison_month_name}?"
+                        )
+
+                with suggestion_col2:
+                    if st.button(
+                        "Which bills may be missing?",
+                        key=(
+                            "ask_missing_bills_"
+                            f"{selected_year}_"
+                            f"{active_base_month}_"
+                            f"{active_comparison_month}"
+                        ),
+                        width="stretch",
+                    ):
+                        suggested_question = (
+                            "Which expense categories or "
+                            "bills may be missing in "
+                            f"{comparison_month_name} "
+                            f"compared with "
+                            f"{base_month_name}?"
+                        )
+
+                with suggestion_col3:
+                    if st.button(
+                        "Did business performance improve?",
+                        key=(
+                            "ask_performance_"
+                            f"{selected_year}_"
+                            f"{active_base_month}_"
+                            f"{active_comparison_month}"
+                        ),
+                        width="stretch",
+                    ):
+                        suggested_question = (
+                            "Did business performance "
+                            f"improve from "
+                            f"{base_month_name} to "
+                            f"{comparison_month_name}? "
+                            "Explain using income, expenses "
+                            "and net."
+                        )
+
+                for message in chat_messages:
+                    role = message.get(
+                        "role",
+                        "assistant",
+                    )
+
+                    content = message.get(
+                        "content",
+                        "",
+                    )
+
+                    with st.chat_message(role):
+                        st.markdown(content)
+
+                typed_question = st.chat_input(
+                    (
+                        "Ask anything about your "
+                        "FinWise financial data..."
+                    ),
+                    key=(
+                        "finwise_comparison_chat_input_"
+                        f"{selected_year}_"
+                        f"{active_base_month}_"
+                        f"{active_comparison_month}"
+                    ),
+                )
+
+                user_question = (
+                    suggested_question
+                    or typed_question
+                )
+
+                if user_question:
+                    chat_messages.append({
+                        "role": "user",
+                        "content": user_question,
+                    })
+
+                    with st.chat_message("user"):
+                        st.markdown(user_question)
+
+                    with st.chat_message(
+                        "assistant"
+                    ):
+                        with st.spinner(
+                            "FinWise is analysing "
+                            "your data..."
+                        ):
+                            try:
+                                financial_context = (
+                                    build_finwise_chat_context(
+                                        phone=phone,
+                                        selected_year=(
+                                            selected_year
+                                        ),
+                                        base_month=(
+                                            active_base_month
+                                        ),
+                                        comparison_month=(
+                                            active_comparison_month
+                                        ),
+                                        monthly_df=monthly_df,
+                                        category_comparison_df=(
+                                            category_comparison_df
+                                        ),
+                                    )
+                                )
+
+                                answer = (
+                                    answer_finwise_data_question(
+                                        question=(
+                                            user_question
+                                        ),
+                                        financial_context=(
+                                            financial_context
+                                        ),
+                                        conversation_history=(
+                                            chat_messages
+                                        ),
+                                    )
+                                )
+
+                                st.markdown(answer)
+
+                                chat_messages.append({
+                                    "role": "assistant",
+                                    "content": answer,
+                                })
+
+                                st.session_state[
+                                    comparison_chat_key
+                                ] = chat_messages
+
+                            except Exception as exc:
+                                error_message = (
+                                    "FinWise could not answer "
+                                    "this question. "
+                                    f"Error: {exc}"
+                                )
+
+                                st.error(error_message)
+
+                if chat_messages:
+                    if st.button(
+                        "Clear Chat",
+                        key=(
+                            "clear_finwise_chat_"
+                            f"{selected_year}_"
+                            f"{active_base_month}_"
+                            f"{active_comparison_month}"
+                        ),
+                    ):
+                        st.session_state[
+                            comparison_chat_key
+                        ] = []
+
+                        st.rerun()
 
 elif screen == "🗑️ Recently Deleted":
     st.subheader("🗑️ Recently Deleted")
