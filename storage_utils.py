@@ -1870,7 +1870,6 @@ def _safe_numeric_sql(column_expression):
         )::numeric
     """
 
-
 def _safe_text_date_sql(column_expression):
     """
     Supports:
@@ -1878,6 +1877,8 @@ def _safe_text_date_sql(column_expression):
     YYYY-MM-DD HH:MM:SS
     DD/MM/YYYY
     DD-MM-YYYY
+    DD/MM/YY
+    DD-MM-YY
     """
 
     return f"""
@@ -1907,6 +1908,20 @@ def _safe_text_date_sql(column_expression):
                     FROM 1 FOR 10
                 ),
                 'DD-MM-YYYY'
+            )
+
+            WHEN TRIM(CAST({column_expression} AS TEXT))
+                ~ '^\\d{{1,2}}/\\d{{1,2}}/\\d{{2}}$'
+            THEN TO_DATE(
+                TRIM(CAST({column_expression} AS TEXT)),
+                'DD/MM/YY'
+            )
+
+            WHEN TRIM(CAST({column_expression} AS TEXT))
+                ~ '^\\d{{1,2}}-\\d{{1,2}}-\\d{{2}}$'
+            THEN TO_DATE(
+                TRIM(CAST({column_expression} AS TEXT)),
+                'DD-MM-YY'
             )
 
             ELSE NULL

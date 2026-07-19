@@ -2099,10 +2099,31 @@ if screen == "📊 Dashboard":
         st.write("### Petpooja Payment Summary")
         payment_summary = payment_summary.reset_index(drop=True)
 
+        payment_summary_display = payment_summary.rename(
+            columns={
+                "payment_method": "Payment Method",
+                "petpooja_total": "Sales Total",
+            }
+        )
+
+        st.dataframe(
+            payment_summary_display,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Sales Total": st.column_config.NumberColumn(
+                    "Sales Total",
+                    format="₹%.2f",
+                ),
+            },
+        )
+
         st.markdown(
-    f'<div class="mobile-table">{mobile_table_html(payment_summary)}</div>',
-    unsafe_allow_html=True
-)
+            f'<div class="mobile-table">'
+            f'{mobile_table_html(payment_summary_display)}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
         st.write("### Uploaded Petpooja Reports")
 
