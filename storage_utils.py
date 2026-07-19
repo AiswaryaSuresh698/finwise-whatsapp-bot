@@ -1131,7 +1131,12 @@ def load_petpooja_entries_for_user(phone, limit=1000):
             text("""
                 SELECT *
                 FROM petpooja_entries
-                WHERE user_phone = :user_phone
+                WHERE REGEXP_REPLACE(
+                    COALESCE(user_phone, ''),
+                    '[^0-9]',
+                    '',
+                    'g'
+                ) = :user_phone
                 ORDER BY id DESC
                 LIMIT :limit
             """),
@@ -1143,7 +1148,11 @@ def load_petpooja_entries_for_user(phone, limit=1000):
         )
 
     except Exception as e:
-        print("load_petpooja_entries_for_user error:", str(e))
+        print(
+            "load_petpooja_entries_for_user error:",
+            str(e),
+            flush=True,
+        )
         return pd.DataFrame()
 
 
@@ -1208,49 +1217,124 @@ def get_dashboard_totals_for_user(phone, start_date=None, end_date=None):
         return 0.0, 0.0
 
 
-def get_petpooja_total_for_user(phone, start_date=None, end_date=None):
+def get_petpooja_total_for_user(
+    phone,
+    start_date=None,
+    end_date=None
+):
     if engine is None:
         return 0.0
 
     try:
         phone_clean = clean_phone(phone)
 
-        date_sql = ""
-        params = {"user_phone": phone_clean}
+        inspector = inspect(engine)
 
-        if start_date and end_date:
-            date_sql = """
-                AND CASE
-                    WHEN "Date" ~ '^\\d{4}-\\d{2}-\\d{2}$'
-                    THEN "Date"::date
-                    WHEN "date" ~ '^\\d{4}-\\d{2}-\\d{2}$'
-                    THEN "date"::date
-                    ELSE NULL
-                END BETWEEN :start_date AND :end_date
-            """
-            params["start_date"] = start_date
-            params["end_date"] = end_date
-
-        df = pd.read_sql(
-            text(f"""
-                SELECT COALESCE(SUM(
-                    COALESCE(NULLIF(total, ''), NULLIF("Total", ''), '0')::numeric
-                ), 0) AS petpooja_total
-                FROM petpooja_entries
-                WHERE user_phone = :user_phone
-                {date_sql}
-            """),
-            engine,
-            params=params
-        )
-
-        if df.empty:
+        if not inspector.has_table("petpooja_entries"):
             return 0.0
 
-        return float(df.iloc[0]["petpooja_total"] or 0)
+        petpooja_columns = {
+            column["name"]
+            for column in inspector.get_columns(
+                "petpooja_entries"
+            )
+        }
+
+        # Columns are lowercase because append_sheet_row()
+        # runs _sanitize_columns().
+        if "date" in petpooja_columns:
+            petpooja_date_sql = _safe_text_date_sql(
+                '"date"'
+            )
+        elif "date_parsed" in petpooja_columns:
+            petpooja_date_sql = _safe_text_date_sql(
+                '"date_parsed"'
+            )
+        else:
+            petpooja_date_sql = "NULL::date"
+
+        amount_expressions = []
+
+        for column_name in [
+            "petpooja_total",
+            "total",
+            "my_amount",
+            "total_tip",
+        ]:
+            if column_name in petpooja_columns:
+                amount_expressions.append(
+                    f"""
+                    NULLIF(
+                        {_safe_numeric_sql(f'"{column_name}"')},
+                        0
+                    )
+                    """
+                )
+
+        if amount_expressions:
+            petpooja_amount_sql = (
+                "COALESCE("
+                + ", ".join(amount_expressions)
+                + ", 0)"
+            )
+        else:
+            petpooja_amount_sql = "0::numeric"
+
+        filters = [
+            """
+            REGEXP_REPLACE(
+                COALESCE(user_phone, ''),
+                '[^0-9]',
+                '',
+                'g'
+            ) = :user_phone
+            """
+        ]
+
+        params = {
+            "user_phone": phone_clean
+        }
+
+        if start_date is not None:
+            filters.append(
+                f"{petpooja_date_sql} >= :start_date"
+            )
+            params["start_date"] = start_date
+
+        if end_date is not None:
+            filters.append(
+                f"{petpooja_date_sql} <= :end_date"
+            )
+            params["end_date"] = end_date
+
+        where_clause = " AND ".join(filters)
+
+        with engine.begin() as conn:
+            row = conn.execute(
+                text(f"""
+                    SELECT
+                        COALESCE(
+                            SUM({petpooja_amount_sql}),
+                            0
+                        ) AS petpooja_total
+                    FROM petpooja_entries
+                    WHERE {where_clause}
+                """),
+                params,
+            ).fetchone()
+
+        return float(
+            row.petpooja_total
+            if row and row.petpooja_total is not None
+            else 0
+        )
 
     except Exception as e:
-        print("get_petpooja_total_for_user error:", str(e))
+        print(
+            "get_petpooja_total_for_user error:",
+            str(e),
+            flush=True,
+        )
         return 0.0
     
 def ensure_recycle_bin_columns():
@@ -1759,26 +1843,37 @@ def _safe_text_date_sql(column_expression):
     """
     Supports:
     YYYY-MM-DD
+    YYYY-MM-DD HH:MM:SS
     DD/MM/YYYY
     DD-MM-YYYY
     """
+
     return f"""
         CASE
-            WHEN CAST({column_expression} AS TEXT)
-                ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$'
-            THEN CAST({column_expression} AS DATE)
+            WHEN TRIM(CAST({column_expression} AS TEXT))
+                ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}'
+            THEN SUBSTRING(
+                TRIM(CAST({column_expression} AS TEXT))
+                FROM 1 FOR 10
+            )::date
 
-            WHEN CAST({column_expression} AS TEXT)
-                ~ '^\\d{{1,2}}/\\d{{1,2}}/\\d{{4}}$'
+            WHEN TRIM(CAST({column_expression} AS TEXT))
+                ~ '^\\d{{1,2}}/\\d{{1,2}}/\\d{{4}}'
             THEN TO_DATE(
-                CAST({column_expression} AS TEXT),
+                SUBSTRING(
+                    TRIM(CAST({column_expression} AS TEXT))
+                    FROM 1 FOR 10
+                ),
                 'DD/MM/YYYY'
             )
 
-            WHEN CAST({column_expression} AS TEXT)
-                ~ '^\\d{{1,2}}-\\d{{1,2}}-\\d{{4}}$'
+            WHEN TRIM(CAST({column_expression} AS TEXT))
+                ~ '^\\d{{1,2}}-\\d{{1,2}}-\\d{{4}}'
             THEN TO_DATE(
-                CAST({column_expression} AS TEXT),
+                SUBSTRING(
+                    TRIM(CAST({column_expression} AS TEXT))
+                    FROM 1 FOR 10
+                ),
                 'DD-MM-YYYY'
             )
 
@@ -1940,7 +2035,12 @@ def get_monthly_analysis_for_user(phone, year):
 
                 SUM({petpooja_total_sql}) AS petpooja_income
             FROM petpooja_entries
-            WHERE user_phone = :user_phone
+            WHERE REGEXP_REPLACE(
+                    COALESCE(user_phone, ''),
+                    '[^0-9]',
+                    '',
+                    'g'
+                ) = :user_phone
               AND EXTRACT(
                     YEAR FROM {petpooja_date_sql}
                   ) = :selected_year
