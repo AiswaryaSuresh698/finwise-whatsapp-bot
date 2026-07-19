@@ -2462,3 +2462,123 @@ def soft_delete_income_entry(entry_id, user_phone):
         )
 
     return result.rowcount
+
+def delete_petpooja_report(report_id, phone):
+    if engine is None:
+        return 0
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                DELETE FROM petpooja_entries
+                WHERE report_id = :report_id
+                AND REGEXP_REPLACE(
+                    COALESCE(user_phone, ''),
+                    '[^0-9]',
+                    '',
+                    'g'
+                ) = :user_phone
+            """),
+            {
+                "report_id": str(report_id),
+                "user_phone": clean_phone(phone),
+            }
+        )
+
+    return result.rowcount
+
+
+def load_petpooja_reports_for_user(phone):
+    if engine is None:
+        return pd.DataFrame()
+
+    try:
+        return pd.read_sql(
+            text("""
+                SELECT
+                    report_id,
+                    source_filename,
+                    MIN(created_at) AS uploaded_at,
+                    COUNT(*) AS row_count,
+
+                    MIN(
+                        CASE
+                            WHEN date ~ '^\\d{4}-\\d{2}-\\d{2}'
+                            THEN SUBSTRING(date FROM 1 FOR 10)::date
+
+                            WHEN date ~ '^\\d{1,2}/\\d{1,2}/\\d{4}'
+                            THEN TO_DATE(
+                                SUBSTRING(date FROM 1 FOR 10),
+                                'DD/MM/YYYY'
+                            )
+
+                            ELSE NULL
+                        END
+                    ) AS start_date,
+
+                    MAX(
+                        CASE
+                            WHEN date ~ '^\\d{4}-\\d{2}-\\d{2}'
+                            THEN SUBSTRING(date FROM 1 FOR 10)::date
+
+                            WHEN date ~ '^\\d{1,2}/\\d{1,2}/\\d{4}'
+                            THEN TO_DATE(
+                                SUBSTRING(date FROM 1 FOR 10),
+                                'DD/MM/YYYY'
+                            )
+
+                            ELSE NULL
+                        END
+                    ) AS end_date,
+
+                    COALESCE(
+                        SUM(
+                            COALESCE(
+                                NULLIF(
+                                    REGEXP_REPLACE(
+                                        COALESCE(
+                                            petpooja_total,
+                                            total,
+                                            my_amount,
+                                            '0'
+                                        ),
+                                        '[^0-9.-]',
+                                        '',
+                                        'g'
+                                    ),
+                                    ''
+                                ),
+                                '0'
+                            )::numeric
+                        ),
+                        0
+                    ) AS report_total
+
+                FROM petpooja_entries
+
+                WHERE REGEXP_REPLACE(
+                    COALESCE(user_phone, ''),
+                    '[^0-9]',
+                    '',
+                    'g'
+                ) = :user_phone
+
+                AND COALESCE(report_id, '') != ''
+
+                GROUP BY report_id, source_filename
+
+                ORDER BY MIN(created_at) DESC
+            """),
+            engine,
+            params={
+                "user_phone": clean_phone(phone)
+            }
+        )
+
+    except Exception as e:
+        print(
+            "load_petpooja_reports_for_user error:",
+            str(e),
+            flush=True,
+        )
+        return pd.DataFrame()

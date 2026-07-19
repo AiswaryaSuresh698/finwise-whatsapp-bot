@@ -3,6 +3,7 @@ import random
 import time
 from io import BytesIO
 from datetime import date, timedelta
+import uuid
 
 import pandas as pd
 import qrcode
@@ -59,6 +60,8 @@ from storage_utils import (
     update_income_entry_by_id,
     soft_delete_income_entry,
     engine,
+    load_petpooja_reports_for_user,
+    delete_petpooja_report,
 )
 
 load_dotenv()
@@ -1882,6 +1885,13 @@ if screen == "📊 Dashboard":
                     else:
                         petpooja_report_df["user_phone"] = (
                             clean_phone(phone)
+                        
+                        )
+                        report_id = uuid.uuid4().hex
+
+                        petpooja_report_df["report_id"] = report_id
+                        petpooja_report_df["source_filename"] = (
+                            uploaded_sales_file.name
                         )
 
                         petpooja_report_df["duplicate_key"] = (
@@ -1961,25 +1971,150 @@ if screen == "📊 Dashboard":
     unsafe_allow_html=True
 )
 
-        with st.expander("Preview Petpooja Report"):
-            petpooja_preview_df = petpooja_saved_df.reset_index(drop=True).copy()
+        st.write("### Uploaded Petpooja Reports")
 
-            if "Date" in petpooja_preview_df.columns:
-                petpooja_preview_df["Date"] = pd.to_datetime(
-                    petpooja_preview_df["Date"],
-                    errors="coerce",
-                    dayfirst=True
-                ).dt.strftime("%d-%b-%Y")
+        petpooja_reports_df = load_petpooja_reports_for_user(
+            phone
+        )
 
-            available_petpooja_columns = [
-                col for col in PETPOOJA_INPUT_COLUMNS
-                if col in petpooja_preview_df.columns
-            ]
-
-            st.markdown(
-                f'<div class="mobile-table">{mobile_table_html(petpooja_preview_df[available_petpooja_columns])}</div>',
-                unsafe_allow_html=True
+        if petpooja_reports_df.empty:
+            st.info(
+                "No individually tracked Petpooja reports "
+                "are available yet."
             )
+
+        else:
+            for _, report_row in petpooja_reports_df.iterrows():
+                report_id = str(
+                    report_row.get("report_id", "")
+                )
+
+                source_filename = str(
+                    report_row.get(
+                        "source_filename",
+                        "Petpooja Report"
+                    )
+                )
+
+                row_count = int(
+                    report_row.get("row_count", 0) or 0
+                )
+
+                report_total = float(
+                    report_row.get("report_total", 0) or 0
+                )
+
+                start_date_value = report_row.get(
+                    "start_date"
+                )
+
+                end_date_value = report_row.get(
+                    "end_date"
+                )
+
+                uploaded_at = report_row.get(
+                    "uploaded_at"
+                )
+
+                date_range_text = "Date unavailable"
+
+                if (
+                    pd.notna(start_date_value)
+                    and pd.notna(end_date_value)
+                ):
+                    date_range_text = (
+                        f"{pd.to_datetime(start_date_value).strftime('%d-%b-%Y')}"
+                        f" to "
+                        f"{pd.to_datetime(end_date_value).strftime('%d-%b-%Y')}"
+                    )
+
+                expander_title = (
+                    f"📄 {source_filename} • "
+                    f"{row_count:,} rows • "
+                    f"₹{report_total:,.2f}"
+                )
+
+                with st.expander(
+                    expander_title,
+                    expanded=False
+                ):
+                    st.write(
+                        f"**Sales period:** {date_range_text}"
+                    )
+
+                    if pd.notna(uploaded_at):
+                        st.write(
+                            "**Uploaded:** "
+                            f"{pd.to_datetime(uploaded_at).strftime('%d-%b-%Y %I:%M %p')}"
+                        )
+
+                    report_records_df = (
+                        petpooja_saved_df[
+                            petpooja_saved_df[
+                                "report_id"
+                            ].astype(str) == report_id
+                        ].copy()
+                    )
+
+                    preview_columns = [
+                        "order_no",
+                        "date",
+                        "payment_type",
+                        "order_type",
+                        "my_amount",
+                        "discount",
+                        "total",
+                        "biller_name",
+                    ]
+
+                    available_columns = [
+                        column
+                        for column in preview_columns
+                        if column in report_records_df.columns
+                    ]
+
+                    if available_columns:
+                        st.dataframe(
+                            report_records_df[
+                                available_columns
+                            ].head(500),
+                            width="stretch",
+                            hide_index=True,
+                        )
+
+                    confirm_delete = st.checkbox(
+                        "I understand this will remove this "
+                        "report and update all totals.",
+                        key=f"confirm_petpooja_delete_{report_id}",
+                    )
+
+                    if st.button(
+                        "🗑️ Delete This Report",
+                        key=f"delete_petpooja_report_{report_id}",
+                        disabled=not confirm_delete,
+                    ):
+                        deleted_count = (
+                            delete_petpooja_report(
+                                report_id=report_id,
+                                phone=phone,
+                            )
+                        )
+
+                        if deleted_count:
+                            st.success(
+                                f"Deleted {deleted_count} Petpooja "
+                                "records from this report."
+                            )
+
+                            st.cache_data.clear()
+                            st.rerun()
+
+                        else:
+                            st.warning(
+                                "The report could not be deleted."
+                            )
+
+            
 
     st.write("### 💰 Manual Income")
 
