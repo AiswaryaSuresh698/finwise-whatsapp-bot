@@ -2423,7 +2423,8 @@ if screen == "📊 Dashboard":
 
                 original_row = original_lookup.loc[entry_id]
 
-                new_category = normalize_category(row.get("Category", ""))
+                new_category = normalize_category(row.get("Category", "")
+)
                 new_vendor = str(row.get("Vendor", "")).strip()
                 new_description = str(row.get("Description", "")).strip()
                 new_amount = float(pd.to_numeric(row.get("Amount", 0), errors="coerce") or 0)
@@ -3094,634 +3095,634 @@ if screen == "📊 Dashboard":
                 st.cache_data.clear()
                 st.rerun()
 
-        if "show_income_table" not in st.session_state:
-            st.session_state.show_income_table = False
+    if "show_income_table" not in st.session_state:
+        st.session_state.show_income_table = False
 
 
-        income_button_label = (
-            "Hide Income Records"
-            if st.session_state.show_income_table
-            else "View Income Records"
+    income_button_label = (
+        "Hide Income Records"
+        if st.session_state.show_income_table
+        else "View Income Records"
+    )
+
+    if st.button(
+        income_button_label,
+        use_container_width=True,
+        key="toggle_income_table"
+    ):
+        st.session_state.show_income_table = (
+            not st.session_state.show_income_table
         )
 
-        if st.button(
-            income_button_label,
+
+    if st.session_state.show_income_table:
+        income_df = cached_income_entries(
+            phone=phone,
+            start_date=sql_start_date,
+            end_date=sql_end_date,
+            limit=500,
+        )
+
+        if income_df.empty:
+            st.info(
+                "No manual income records found for "
+                "the selected timeframe."
+            )
+
+        else:
+            original_income_df = (
+                income_df
+                .reset_index(drop=True)
+                .copy()
+            )
+
+        income_editor_df = pd.DataFrame()
+
+        income_editor_df["db_id"] = (
+            original_income_df["id"]
+            .astype(str)
+        )
+
+        income_editor_df["Reference"] = (
+            "INC-"
+            + original_income_df["id"].astype(str)
+        )
+
+        income_editor_df["Date"] = (
+            original_income_df["income_date"]
+            .astype(str)
+        )
+
+        income_editor_df["Customer"] = (
+            original_income_df["customer_name"]
+            .fillna("")
+            .astype(str)
+        )
+
+        income_editor_df["Event / Order"] = (
+            original_income_df["event_name"]
+            .fillna("")
+            .astype(str)
+        )
+
+        income_editor_df["Category"] = (
+            original_income_df["income_category"]
+            .fillna("Other Income")
+            .astype(str)
+        )
+
+        income_editor_df["Description"] = (
+            original_income_df["description"]
+            .fillna("")
+            .astype(str)
+        )
+
+        income_editor_df["Amount"] = pd.to_numeric(
+            original_income_df["amount"],
+            errors="coerce"
+        ).fillna(0)
+
+        income_editor_df["Payment Method"] = (
+            original_income_df["payment_method"]
+            .fillna("")
+            .astype(str)
+        )
+
+        income_editor_df["Delete?"] = False
+
+        edited_income_df = st.data_editor(
+            income_editor_df,
             use_container_width=True,
-            key="toggle_income_table"
-        ):
-            st.session_state.show_income_table = (
-                not st.session_state.show_income_table
-            )
-
-
-        if st.session_state.show_income_table:
-            income_df = cached_income_entries(
-                phone=phone,
-                start_date=sql_start_date,
-                end_date=sql_end_date,
-                limit=500,
-            )
-
-            if income_df.empty:
-                st.info(
-                    "No manual income records found for "
-                    "the selected timeframe."
-                )
-
-            else:
-                original_income_df = (
-                    income_df
-                    .reset_index(drop=True)
-                    .copy()
-                )
-
-                income_editor_df = pd.DataFrame()
-
-                income_editor_df["db_id"] = (
-                    original_income_df["id"]
-                    .astype(str)
-                )
-
-                income_editor_df["Reference"] = (
-                    "INC-"
-                    + original_income_df["id"].astype(str)
-                )
-
-                income_editor_df["Date"] = (
-                    original_income_df["income_date"]
-                    .astype(str)
-                )
-
-                income_editor_df["Customer"] = (
-                    original_income_df["customer_name"]
-                    .fillna("")
-                    .astype(str)
-                )
-
-                income_editor_df["Event / Order"] = (
-                    original_income_df["event_name"]
-                    .fillna("")
-                    .astype(str)
-                )
-
-                income_editor_df["Category"] = (
-                    original_income_df["income_category"]
-                    .fillna("Other Income")
-                    .astype(str)
-                )
-
-                income_editor_df["Description"] = (
-                    original_income_df["description"]
-                    .fillna("")
-                    .astype(str)
-                )
-
-                income_editor_df["Amount"] = pd.to_numeric(
-                    original_income_df["amount"],
-                    errors="coerce"
-                ).fillna(0)
-
-                income_editor_df["Payment Method"] = (
-                    original_income_df["payment_method"]
-                    .fillna("")
-                    .astype(str)
-                )
-
-                income_editor_df["Delete?"] = False
-
-                edited_income_df = st.data_editor(
-                    income_editor_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    num_rows="fixed",
-                    key="manual_income_editor",
-                    column_config={
-                        "Date": st.column_config.TextColumn(
-                            "Date",
-                            help="Use YYYY-MM-DD"
-                        ),
-                        "Category": st.column_config.SelectboxColumn(
-                            "Category",
-                            options=[
-                                "Catering Income",
-                                "Party Event Income",
-                                "Private Event Income",
-                                "Corporate Event Income",
-                                "Bulk Order Income",
-                                "Other Income",
-                            ],
-                            required=True,
-                        ),
-                        "Amount": st.column_config.NumberColumn(
-                            "Amount",
-                            min_value=0.0,
-                            step=100.0,
-                            format="₹%.2f",
-                        ),
-                        "Payment Method": (
-                            st.column_config.SelectboxColumn(
-                                "Payment Method",
-                                options=[
-                                    "Cash",
-                                    "UPI",
-                                    "Bank Transfer",
-                                    "Credit Card",
-                                    "Cheque",
-                                    "Other",
-                                ],
-                            )
-                        ),
-                        "Delete?": st.column_config.CheckboxColumn(
-                            "Delete?",
-                            default=False,
-                        ),
-                    },
-                    disabled=[
-                        "db_id",
-                        "Reference",
+            hide_index=True,
+            num_rows="fixed",
+            key="manual_income_editor",
+            column_config={
+                "Date": st.column_config.TextColumn(
+                    "Date",
+                    help="Use YYYY-MM-DD"
+                ),
+                "Category": st.column_config.SelectboxColumn(
+                    "Category",
+                    options=[
+                        "Catering Income",
+                        "Party Event Income",
+                        "Private Event Income",
+                        "Corporate Event Income",
+                        "Bulk Order Income",
+                        "Other Income",
                     ],
-                )
-
-                income_save_col, income_delete_col = (
-                    st.columns(2)
-                )
-
-                with income_save_col:
-                    if st.button(
-                        "💾 Save Income Changes",
-                        type="primary",
-                        use_container_width=True,
-                        key="save_income_changes",
-                    ):
-                        updated_count = 0
-
-                        original_lookup = (
-                            original_income_df
-                            .set_index(
-                                original_income_df[
-                                    "id"
-                                ].astype(str)
-                            )
-                        )
-
-                        for _, edited_row in (
-                            edited_income_df.iterrows()
-                        ):
-                            entry_id = str(
-                                edited_row.get(
-                                    "db_id",
-                                    ""
-                                )
-                            ).strip()
-
-                            if (
-                                not entry_id
-                                or entry_id
-                                not in original_lookup.index
-                            ):
-                                continue
-
-                            original_row = (
-                                original_lookup.loc[
-                                    entry_id
-                                ]
-                            )
-
-                            new_date = str(
-                                edited_row.get(
-                                    "Date",
-                                    ""
-                                )
-                            ).strip()
-
-                            new_customer = str(
-                                edited_row.get(
-                                    "Customer",
-                                    ""
-                                )
-                            ).strip()
-
-                            new_event = str(
-                                edited_row.get(
-                                    "Event / Order",
-                                    ""
-                                )
-                            ).strip()
-
-                            new_category = str(
-                                edited_row.get(
-                                    "Category",
-                                    ""
-                                )
-                            ).strip()
-
-                            new_description = str(
-                                edited_row.get(
-                                    "Description",
-                                    ""
-                                )
-                            ).strip()
-
-                            new_amount = float(
-                                pd.to_numeric(
-                                    edited_row.get(
-                                        "Amount",
-                                        0
-                                    ),
-                                    errors="coerce",
-                                )
-                                or 0
-                            )
-
-                            new_payment_method = str(
-                                edited_row.get(
-                                    "Payment Method",
-                                    ""
-                                )
-                            ).strip()
-
-                            old_date = str(
-                                original_row.get(
-                                    "income_date",
-                                    ""
-                                )
-                            ).strip()
-
-                            old_customer = str(
-                                original_row.get(
-                                    "customer_name",
-                                    ""
-                                )
-                            ).strip()
-
-                            old_event = str(
-                                original_row.get(
-                                    "event_name",
-                                    ""
-                                )
-                            ).strip()
-
-                            old_category = str(
-                                original_row.get(
-                                    "income_category",
-                                    ""
-                                )
-                            ).strip()
-
-                            old_description = str(
-                                original_row.get(
-                                    "description",
-                                    ""
-                                )
-                            ).strip()
-
-                            old_amount = float(
-                                pd.to_numeric(
-                                    original_row.get(
-                                        "amount",
-                                        0
-                                    ),
-                                    errors="coerce",
-                                )
-                                or 0
-                            )
-
-                            old_payment_method = str(
-                                original_row.get(
-                                    "payment_method",
-                                    ""
-                                )
-                            ).strip()
-
-                            changes = {
-                                "income_date": (
-                                    new_date
-                                    if new_date != old_date
-                                    else None
-                                ),
-                                "customer_name": (
-                                    new_customer
-                                    if new_customer
-                                    != old_customer
-                                    else None
-                                ),
-                                "event_name": (
-                                    new_event
-                                    if new_event != old_event
-                                    else None
-                                ),
-                                "income_category": (
-                                    new_category
-                                    if new_category
-                                    != old_category
-                                    else None
-                                ),
-                                "description": (
-                                    new_description
-                                    if new_description
-                                    != old_description
-                                    else None
-                                ),
-                                "amount": (
-                                    new_amount
-                                    if new_amount != old_amount
-                                    else None
-                                ),
-                                "payment_method": (
-                                    new_payment_method
-                                    if new_payment_method
-                                    != old_payment_method
-                                    else None
-                                ),
-                            }
-
-                            if not any(
-                                value is not None
-                                for value in changes.values()
-                            ):
-                                continue
-
-                            updated_count += (
-                                update_income_entry_by_id(
-                                    entry_id=entry_id,
-                                    user_phone=phone,
-                                    **changes,
-                                )
-                            )
-
-                        if updated_count:
-                            st.success(
-                                f"Updated {updated_count} "
-                                f"income record(s)."
-                            )
-                            st.cache_data.clear()
-                            st.rerun()
-                        else:
-                            st.info(
-                                "No income changes were found."
-                            )
-
-                with income_delete_col:
-                    if st.button(
-                        "🗑️ Delete Selected Income",
-                        use_container_width=True,
-                        key="delete_selected_income",
-                    ):
-                        selected_income = (
-                            edited_income_df[
-                                edited_income_df[
-                                    "Delete?"
-                                ] == True
-                            ]
-                        )
-
-                        if selected_income.empty:
-                            st.warning(
-                                "Select at least one income "
-                                "record to delete."
-                            )
-
-                        else:
-                            deleted_count = 0
-
-                            for entry_id in (
-                                selected_income[
-                                    "db_id"
-                                ]
-                                .astype(str)
-                                .tolist()
-                            ):
-                                deleted_count += (
-                                    soft_delete_income_entry(
-                                        entry_id=entry_id,
-                                        user_phone=phone,
-                                    )
-                                )
-
-                            if deleted_count:
-                                st.success(
-                                    f"Deleted {deleted_count} "
-                                    f"income record(s)."
-                                )
-                                st.cache_data.clear()
-                                st.rerun()
-                            else:
-                                st.warning(
-                                    "No income records were deleted."
-                                )
-
-            st.write("### Download Report")
-
-            if st.button(
-                "📄 Prepare Excel Download",
-                use_container_width=True,
-                key="prepare_excel_download"
-            ):
-                output = BytesIO()
-
-                # -----------------------------
-                # Expense export
-                # -----------------------------
-                expense_export_df = df.copy()
-
-                if not expense_export_df.empty:
-                    expense_export_df = expense_export_df.reset_index(drop=True)
-
-                    if "id" in expense_export_df.columns:
-                        expense_export_df.insert(
-                            0,
-                            "Expense Reference",
-                            "EXP-" + expense_export_df["id"].astype(str)
-                        )
-
-                    expense_export_df = expense_export_df.drop(
-                        columns=[
-                            "user_phone_clean",
-                            "id",
-                            "date_parsed",
-                            "user_phone",
-                            "subtotal",
-                            "tax",
-                            "currency",
-                            "confidence",
-                            "reason",
-                            "image_path",
-                            "created_at",
-                            "duplicate_key",
-                            "is_deleted",
-                            "deleted_at",
-                            "deleted_by",
-                            "delete_source",
+                    required=True,
+                ),
+                "Amount": st.column_config.NumberColumn(
+                    "Amount",
+                    min_value=0.0,
+                    step=100.0,
+                    format="₹%.2f",
+                ),
+                "Payment Method": (
+                    st.column_config.SelectboxColumn(
+                        "Payment Method",
+                        options=[
+                            "Cash",
+                            "UPI",
+                            "Bank Transfer",
+                            "Credit Card",
+                            "Cheque",
+                            "Other",
                         ],
-                        errors="ignore"
                     )
+                ),
+                "Delete?": st.column_config.CheckboxColumn(
+                    "Delete?",
+                    default=False,
+                ),
+            },
+            disabled=[
+                "db_id",
+                "Reference",
+            ],
+        )
 
-                # -----------------------------
-                # Manual income export
-                # Loaded only after button click
-                # -----------------------------
-                manual_income_export_df = cached_income_entries(
-                    phone=phone,
-                    start_date=sql_start_date,
-                    end_date=sql_end_date,
-                    limit=5000,
+        income_save_col, income_delete_col = (
+            st.columns(2)
+        )
+
+        with income_save_col:
+            if st.button(
+                "💾 Save Income Changes",
+                type="primary",
+                use_container_width=True,
+                key="save_income_changes",
+            ):
+                updated_count = 0
+
+                original_lookup = (
+                    original_income_df
+                    .set_index(
+                        original_income_df[
+                            "id"
+                        ].astype(str)
+                    )
                 )
 
-                if not manual_income_export_df.empty:
-                    manual_income_export_df = (
-                        manual_income_export_df
-                        .reset_index(drop=True)
-                        .copy()
-                    )
-
-                    if "id" in manual_income_export_df.columns:
-                        manual_income_export_df.insert(
-                            0,
-                            "Income Reference",
-                            "INC-" + manual_income_export_df["id"].astype(str)
+                for _, edited_row in (
+                    edited_income_df.iterrows()
+                ):
+                    entry_id = str(
+                        edited_row.get(
+                            "db_id",
+                            ""
                         )
+                    ).strip()
 
-                    manual_income_export_df = manual_income_export_df.rename(
-                        columns={
-                            "income_date": "Date",
-                            "customer_name": "Customer",
-                            "event_name": "Event / Order",
-                            "income_category": "Income Category",
-                            "description": "Description",
-                            "amount": "Amount",
-                            "payment_method": "Payment Method",
-                            "currency": "Currency",
-                            "source": "Source",
-                            "created_at": "Created At",
-                        }
-                    )
+                    if (
+                        not entry_id
+                        or entry_id
+                        not in original_lookup.index
+                    ):
+                        continue
 
-                    manual_income_export_df = manual_income_export_df.drop(
-                        columns=["id"],
-                        errors="ignore"
-                    )
-
-                # -----------------------------
-                # Petpooja export
-                # -----------------------------
-                petpooja_export_df = petpooja_saved_df.copy()
-
-                if not petpooja_export_df.empty:
-                    petpooja_export_df = petpooja_export_df.drop(
-                        columns=["date_parsed"],
-                        errors="ignore"
-                    )
-
-                # -----------------------------
-                # Write Excel workbook
-                # -----------------------------
-                with pd.ExcelWriter(
-                    output,
-                    engine="openpyxl"
-                ) as writer:
-
-                    if not expense_export_df.empty:
-                        expense_export_df.to_excel(
-                            writer,
-                            index=False,
-                            sheet_name="Expenses"
-                        )
-                    else:
-                        pd.DataFrame(
-                            columns=[
-                                "Expense Reference",
-                                "Date",
-                                "Vendor",
-                                "Description",
-                                "Category",
-                                "Amount",
-                            ]
-                        ).to_excel(
-                            writer,
-                            index=False,
-                            sheet_name="Expenses"
-                        )
-
-                    if not petpooja_export_df.empty:
-                        petpooja_export_df.to_excel(
-                            writer,
-                            index=False,
-                            sheet_name="Petpooja Sales"
-                        )
-                    else:
-                        pd.DataFrame().to_excel(
-                            writer,
-                            index=False,
-                            sheet_name="Petpooja Sales"
-                        )
-
-                    if not manual_income_export_df.empty:
-                        manual_income_export_df.to_excel(
-                            writer,
-                            index=False,
-                            sheet_name="Manual Income"
-                        )
-                    else:
-                        pd.DataFrame(
-                            columns=[
-                                "Income Reference",
-                                "Date",
-                                "Customer",
-                                "Event / Order",
-                                "Income Category",
-                                "Description",
-                                "Amount",
-                                "Payment Method",
-                                "Currency",
-                            ]
-                        ).to_excel(
-                            writer,
-                            index=False,
-                            sheet_name="Manual Income"
-                        )
-
-                    pd.DataFrame(
-                        [
-                            {
-                                "Metric": "Petpooja Income",
-                                "Amount": petpooja_filtered_income,
-                            },
-                            {
-                                "Metric": "Manual Income",
-                                "Amount": manual_income_total,
-                            },
-                            {
-                                "Metric": "Total Income",
-                                "Amount": total_income,
-                            },
-                            {
-                                "Metric": "Total Expense",
-                                "Amount": total_expense,
-                            },
-                            {
-                                "Metric": "Net",
-                                "Amount": net_amount,
-                            },
+                    original_row = (
+                        original_lookup.loc[
+                            entry_id
                         ]
-                    ).to_excel(
-                        writer,
-                        index=False,
-                        sheet_name="Totals"
                     )
 
-                output.seek(0)
+                    new_date = str(
+                        edited_row.get(
+                            "Date",
+                            ""
+                        )
+                    ).strip()
 
-                st.download_button(
-                    "⬇️ Download Excel",
-                    data=output,
-                    file_name="finwise_financial_report.xlsx",
-                    mime=(
-                        "application/vnd.openxmlformats-officedocument."
-                        "spreadsheetml.sheet"
-                    ),
-                    use_container_width=True,
-                    key="download_finwise_excel"
+                    new_customer = str(
+                        edited_row.get(
+                            "Customer",
+                            ""
+                        )
+                    ).strip()
+
+                    new_event = str(
+                        edited_row.get(
+                            "Event / Order",
+                            ""
+                        )
+                    ).strip()
+
+                    new_category = str(
+                        edited_row.get(
+                            "Category",
+                            ""
+                        )
+                    ).strip()
+
+                    new_description = str(
+                        edited_row.get(
+                            "Description",
+                            ""
+                        )
+                    ).strip()
+
+                    new_amount = float(
+                        pd.to_numeric(
+                            edited_row.get(
+                                "Amount",
+                                0
+                            ),
+                            errors="coerce",
+                        )
+                        or 0
+                    )
+
+                    new_payment_method = str(
+                        edited_row.get(
+                            "Payment Method",
+                            ""
+                        )
+                    ).strip()
+
+                    old_date = str(
+                        original_row.get(
+                            "income_date",
+                            ""
+                        )
+                    ).strip()
+
+                    old_customer = str(
+                        original_row.get(
+                            "customer_name",
+                            ""
+                        )
+                    ).strip()
+
+                    old_event = str(
+                        original_row.get(
+                            "event_name",
+                            ""
+                        )
+                    ).strip()
+
+                    old_category = str(
+                        original_row.get(
+                            "income_category",
+                            ""
+                        )
+                    ).strip()
+
+                    old_description = str(
+                        original_row.get(
+                            "description",
+                            ""
+                        )
+                    ).strip()
+
+                    old_amount = float(
+                        pd.to_numeric(
+                            original_row.get(
+                                "amount",
+                                0
+                            ),
+                            errors="coerce",
+                        )
+                        or 0
+                    )
+
+                    old_payment_method = str(
+                        original_row.get(
+                            "payment_method",
+                            ""
+                        )
+                    ).strip()
+
+                    changes = {
+                        "income_date": (
+                            new_date
+                            if new_date != old_date
+                            else None
+                        ),
+                        "customer_name": (
+                            new_customer
+                            if new_customer
+                            != old_customer
+                            else None
+                        ),
+                        "event_name": (
+                            new_event
+                            if new_event != old_event
+                            else None
+                        ),
+                        "income_category": (
+                            new_category
+                            if new_category
+                            != old_category
+                            else None
+                        ),
+                        "description": (
+                            new_description
+                            if new_description
+                            != old_description
+                            else None
+                        ),
+                        "amount": (
+                            new_amount
+                            if new_amount != old_amount
+                            else None
+                        ),
+                        "payment_method": (
+                            new_payment_method
+                            if new_payment_method
+                            != old_payment_method
+                            else None
+                        ),
+                    }
+
+                    if not any(
+                        value is not None
+                        for value in changes.values()
+                    ):
+                        continue
+
+                    updated_count += (
+                        update_income_entry_by_id(
+                            entry_id=entry_id,
+                            user_phone=phone,
+                            **changes,
+                        )
+                    )
+
+                if updated_count:
+                    st.success(
+                        f"Updated {updated_count} "
+                        f"income record(s)."
+                    )
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.info(
+                        "No income changes were found."
+                    )
+
+        with income_delete_col:
+            if st.button(
+                "🗑️ Delete Selected Income",
+                use_container_width=True,
+                key="delete_selected_income",
+            ):
+                selected_income = (
+                    edited_income_df[
+                        edited_income_df[
+                            "Delete?"
+                        ] == True
+                    ]
                 )
+
+                if selected_income.empty:
+                    st.warning(
+                        "Select at least one income "
+                        "record to delete."
+                    )
+
+                else:
+                    deleted_count = 0
+
+                    for entry_id in (
+                        selected_income[
+                            "db_id"
+                        ]
+                        .astype(str)
+                        .tolist()
+                    ):
+                        deleted_count += (
+                            soft_delete_income_entry(
+                                entry_id=entry_id,
+                                user_phone=phone,
+                            )
+                        )
+
+                    if deleted_count:
+                        st.success(
+                            f"Deleted {deleted_count} "
+                            f"income record(s)."
+                        )
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.warning(
+                            "No income records were deleted."
+                        )
+
+    st.write("### Download Report")
+
+    if st.button(
+        "📄 Prepare Excel Download",
+        use_container_width=True,
+        key="prepare_excel_download"
+    ):
+        output = BytesIO()
+
+        # -----------------------------
+        # Expense export
+        # -----------------------------
+        expense_export_df = df.copy()
+
+        if not expense_export_df.empty:
+            expense_export_df = expense_export_df.reset_index(drop=True)
+
+            if "id" in expense_export_df.columns:
+                expense_export_df.insert(
+                    0,
+                    "Expense Reference",
+                    "EXP-" + expense_export_df["id"].astype(str)
+                )
+
+            expense_export_df = expense_export_df.drop(
+                columns=[
+                    "user_phone_clean",
+                    "id",
+                    "date_parsed",
+                    "user_phone",
+                    "subtotal",
+                    "tax",
+                    "currency",
+                    "confidence",
+                    "reason",
+                    "image_path",
+                    "created_at",
+                    "duplicate_key",
+                    "is_deleted",
+                    "deleted_at",
+                    "deleted_by",
+                    "delete_source",
+                ],
+                errors="ignore"
+            )
+
+        # -----------------------------
+        # Manual income export
+        # Loaded only after button click
+        # -----------------------------
+        manual_income_export_df = cached_income_entries(
+            phone=phone,
+            start_date=sql_start_date,
+            end_date=sql_end_date,
+            limit=5000,
+        )
+
+        if not manual_income_export_df.empty:
+            manual_income_export_df = (
+                manual_income_export_df
+                .reset_index(drop=True)
+                .copy()
+            )
+
+            if "id" in manual_income_export_df.columns:
+                manual_income_export_df.insert(
+                    0,
+                    "Income Reference",
+                    "INC-" + manual_income_export_df["id"].astype(str)
+                )
+
+            manual_income_export_df = manual_income_export_df.rename(
+                columns={
+                    "income_date": "Date",
+                    "customer_name": "Customer",
+                    "event_name": "Event / Order",
+                    "income_category": "Income Category",
+                    "description": "Description",
+                    "amount": "Amount",
+                    "payment_method": "Payment Method",
+                    "currency": "Currency",
+                    "source": "Source",
+                    "created_at": "Created At",
+                }
+            )
+
+            manual_income_export_df = manual_income_export_df.drop(
+                columns=["id"],
+                errors="ignore"
+            )
+
+        # -----------------------------
+        # Petpooja export
+        # -----------------------------
+        petpooja_export_df = petpooja_saved_df.copy()
+
+        if not petpooja_export_df.empty:
+            petpooja_export_df = petpooja_export_df.drop(
+                columns=["date_parsed"],
+                errors="ignore"
+            )
+
+        # -----------------------------
+        # Write Excel workbook
+        # -----------------------------
+        with pd.ExcelWriter(
+            output,
+            engine="openpyxl"
+        ) as writer:
+
+            if not expense_export_df.empty:
+                expense_export_df.to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="Expenses"
+                )
+            else:
+                pd.DataFrame(
+                    columns=[
+                        "Expense Reference",
+                        "Date",
+                        "Vendor",
+                        "Description",
+                        "Category",
+                        "Amount",
+                    ]
+                ).to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="Expenses"
+                )
+
+            if not petpooja_export_df.empty:
+                petpooja_export_df.to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="Petpooja Sales"
+                )
+            else:
+                pd.DataFrame().to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="Petpooja Sales"
+                )
+
+            if not manual_income_export_df.empty:
+                manual_income_export_df.to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="Manual Income"
+                )
+            else:
+                pd.DataFrame(
+                    columns=[
+                        "Income Reference",
+                        "Date",
+                        "Customer",
+                        "Event / Order",
+                        "Income Category",
+                        "Description",
+                        "Amount",
+                        "Payment Method",
+                        "Currency",
+                    ]
+                ).to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="Manual Income"
+                )
+
+            pd.DataFrame(
+                [
+                    {
+                        "Metric": "Petpooja Income",
+                        "Amount": petpooja_filtered_income,
+                    },
+                    {
+                        "Metric": "Manual Income",
+                        "Amount": manual_income_total,
+                    },
+                    {
+                        "Metric": "Total Income",
+                        "Amount": total_income,
+                    },
+                    {
+                        "Metric": "Total Expense",
+                        "Amount": total_expense,
+                    },
+                    {
+                        "Metric": "Net",
+                        "Amount": net_amount,
+                    },
+                ]
+            ).to_excel(
+                writer,
+                index=False,
+                sheet_name="Totals"
+            )
+
+        output.seek(0)
+
+        st.download_button(
+            "⬇️ Download Excel",
+            data=output,
+            file_name="finwise_financial_report.xlsx",
+            mime=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            use_container_width=True,
+            key="download_finwise_excel"
+        )
 
 elif screen == "📁 Folder View":
 
