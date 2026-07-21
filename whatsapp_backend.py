@@ -38,6 +38,7 @@ from storage_utils import (
     get_entry_by_reference,
     soft_delete_entry,
     restore_deleted_entry,
+    normalize_category,
 )
 
 from sqlalchemy import text
@@ -89,7 +90,422 @@ PENDING_CATEGORY_FILE = "data/pending_category.json"
 
 
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+15559208533")
+TWILIO_BUDGET_ALERT_TEMPLATE_SID = os.getenv(
+    "TWILIO_BUDGET_ALERT_TEMPLATE_SID",
+    ""
+)
 
+def send_budget_alert_template(
+    to_number,
+    restaurant_name,
+    category,
+    budget_amount,
+    current_spend,
+    exceeded_amount,
+):
+    """
+    Sends the approved Twilio WhatsApp budget-alert template.
+
+    Template variables:
+    {{1}} Restaurant name
+    {{2}} Category
+    {{3}} Monthly budget
+    {{4}} Current spend
+    {{5}} Exceeded amount
+    """
+
+    if not TWILIO_BUDGET_ALERT_TEMPLATE_SID:
+        raise RuntimeError(
+            "TWILIO_BUDGET_ALERT_TEMPLATE_SID is missing."
+        )
+
+    destination = str(to_number or "").strip()
+
+    if not destination.startswith("whatsapp:"):
+        destination = (
+            f"whatsapp:+{clean_phone(destination)}"
+        )
+
+    message = twilio_client.messages.create(
+        from_=TWILIO_WHATSAPP_FROM,
+        to=destination,
+        content_sid=(
+            TWILIO_BUDGET_ALERT_TEMPLATE_SID
+        ),
+        content_variables=json.dumps({
+            "1": str(
+                restaurant_name
+                or "FinWise Customer"
+            ),
+            "2": str(category),
+            "3": f"{float(budget_amount):,.0f}",
+            "4": f"{float(current_spend):,.0f}",
+            "5": f"{float(exceeded_amount):,.0f}",
+
+        }),
+    )
+
+    return message.sid
+
+def get_category_monthly_budget(
+    owner_phone,
+    category,
+):
+    phone_clean = clean_phone(owner_phone)
+    category_clean = normalize_category(category)
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT
+                    monthly_budget,
+                    alert_enabled
+                FROM category_budgets
+                WHERE REGEXP_REPLACE(
+                    COALESCE(user_phone, ''),
+                    '[^0-9]',
+                    '',
+                    'g'
+                ) = :user_phone
+                AND LOWER(TRIM(category))
+                    = LOWER(TRIM(:category))
+                LIMIT 1
+            """),
+            {
+                "user_phone": phone_clean,
+                "category": category_clean,
+            },
+        ).fetchone()
+
+    if not row:
+        return None
+
+    if not bool(row.alert_enabled):
+        return None
+
+    return float(row.monthly_budget or 0)
+
+def get_current_month_category_spend(
+    owner_phone,
+    category,
+):
+    phone_clean = clean_phone(owner_phone)
+    category_clean = normalize_category(category)
+
+    today = datetime.now().date()
+    month_start = today.replace(day=1)
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT
+                    COUNT(*) AS bill_count,
+
+                    COALESCE(
+                        SUM(
+                            NULLIF(
+                                REGEXP_REPLACE(
+                                    COALESCE(total, '0'),
+                                    '[^0-9.-]',
+                                    '',
+                                    'g'
+                                ),
+                                ''
+                            )::numeric
+                        ),
+                        0
+                    ) AS current_spend
+
+                FROM entries
+
+                WHERE REGEXP_REPLACE(
+                    COALESCE(user_phone, ''),
+                    '[^0-9]',
+                    '',
+                    'g'
+                ) = :user_phone
+
+                AND LOWER(TRIM(COALESCE(category, '')))
+                    = LOWER(TRIM(:category))
+
+                AND LOWER(
+                    TRIM(
+                        COALESCE(
+                            transaction_type,
+                            'expense'
+                        )
+                    )
+                ) = 'expense'
+
+                AND LOWER(
+                    TRIM(
+                        COALESCE(is_deleted, 'no')
+                    )
+                ) NOT IN (
+                    'yes',
+                    'true',
+                    '1'
+                )
+
+                AND CASE
+                    WHEN TRIM(COALESCE(date, ''))
+                        ~ '^\\d{4}-\\d{2}-\\d{2}'
+                    THEN SUBSTRING(
+                        TRIM(date)
+                        FROM 1 FOR 10
+                    )::date
+
+                    WHEN TRIM(COALESCE(date, ''))
+                        ~ '^\\d{1,2}/\\d{1,2}/\\d{4}'
+                    THEN TO_DATE(
+                        SUBSTRING(
+                            TRIM(date)
+                            FROM 1 FOR 10
+                        ),
+                        'DD/MM/YYYY'
+                    )
+
+                    WHEN TRIM(COALESCE(date, ''))
+                        ~ '^\\d{1,2}-\\d{1,2}-\\d{4}'
+                    THEN TO_DATE(
+                        SUBSTRING(
+                            TRIM(date)
+                            FROM 1 FOR 10
+                        ),
+                        'DD-MM-YYYY'
+                    )
+
+                    ELSE NULL
+                END BETWEEN :month_start AND :today
+            """),
+            {
+                "user_phone": phone_clean,
+                "category": category_clean,
+                "month_start": month_start,
+                "today": today,
+            },
+        ).fetchone()
+
+    return {
+        "current_spend": float(
+            row.current_spend or 0
+        ),
+        "bill_count": int(
+            row.bill_count or 0
+        ),
+    }
+
+def budget_alert_already_sent(
+    owner_phone,
+    category,
+    alert_level,
+):
+    today = datetime.now().date()
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT id
+                FROM budget_alert_log
+                WHERE REGEXP_REPLACE(
+                    COALESCE(user_phone, ''),
+                    '[^0-9]',
+                    '',
+                    'g'
+                ) = :user_phone
+                AND LOWER(TRIM(category))
+                    = LOWER(TRIM(:category))
+                AND alert_year = :alert_year
+                AND alert_month = :alert_month
+                AND alert_level = :alert_level
+                LIMIT 1
+            """),
+            {
+                "user_phone": clean_phone(
+                    owner_phone
+                ),
+                "category": normalize_category(
+                    category
+                ),
+                "alert_year": today.year,
+                "alert_month": today.month,
+                "alert_level": int(alert_level),
+            },
+        ).fetchone()
+
+    return row is not None
+
+def save_budget_alert_log(
+    owner_phone,
+    category,
+    alert_level,
+    budget_amount,
+    current_spend,
+    message_sid,
+):
+    today = datetime.now().date()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO budget_alert_log (
+                    user_phone,
+                    category,
+                    alert_year,
+                    alert_month,
+                    alert_level,
+                    budget_amount,
+                    current_spend,
+                    message_sid
+                )
+                VALUES (
+                    :user_phone,
+                    :category,
+                    :alert_year,
+                    :alert_month,
+                    :alert_level,
+                    :budget_amount,
+                    :current_spend,
+                    :message_sid
+                )
+                ON CONFLICT DO NOTHING
+            """),
+            {
+                "user_phone": clean_phone(
+                    owner_phone
+                ),
+                "category": normalize_category(
+                    category
+                ),
+                "alert_year": today.year,
+                "alert_month": today.month,
+                "alert_level": int(alert_level),
+                "budget_amount": float(
+                    budget_amount
+                ),
+                "current_spend": float(
+                    current_spend
+                ),
+                "message_sid": str(
+                    message_sid or ""
+                ),
+            },
+        )
+
+def check_and_send_category_budget_alert(
+    owner_phone,
+    category,
+):
+    """
+    Checks the current monthly category spending.
+
+    Sends one 100% alert per category per month.
+    """
+
+    category_clean = normalize_category(
+        category
+    )
+
+    budget_amount = get_category_monthly_budget(
+        owner_phone=owner_phone,
+        category=category_clean,
+    )
+
+    if not budget_amount or budget_amount <= 0:
+        return
+
+    spend_result = (
+        get_current_month_category_spend(
+            owner_phone=owner_phone,
+            category=category_clean,
+        )
+    )
+
+    current_spend = float(
+        spend_result["current_spend"]
+    )
+
+    if current_spend <= budget_amount:
+        return
+
+    alert_level = 100
+
+    if budget_alert_already_sent(
+        owner_phone=owner_phone,
+        category=category_clean,
+        alert_level=alert_level,
+    ):
+        return
+
+    exceeded_amount = (
+        current_spend - budget_amount
+    )
+
+    
+
+    restaurant_name = "FinWise Customer"
+
+    try:
+        with engine.begin() as conn:
+            profile = conn.execute(
+                text("""
+                    SELECT business_name
+                    FROM business_profiles
+                    WHERE REGEXP_REPLACE(
+                        COALESCE(owner_phone, ''),
+                        '[^0-9]',
+                        '',
+                        'g'
+                    ) = :user_phone
+                    LIMIT 1
+                """),
+                {
+                    "user_phone": clean_phone(
+                        owner_phone
+                    )
+                },
+            ).fetchone()
+
+        if profile and profile.business_name:
+            restaurant_name = str(
+                profile.business_name
+            )
+
+    except Exception as exc:
+        print(
+            "BUDGET PROFILE LOOKUP ERROR:",
+            str(exc),
+            flush=True,
+        )
+
+    message_sid = send_budget_alert_template(
+        to_number=owner_phone,
+        restaurant_name=restaurant_name,
+        category=category_clean,
+        budget_amount=budget_amount,
+        current_spend=current_spend,
+        exceeded_amount=exceeded_amount,
+    )
+
+    save_budget_alert_log(
+        owner_phone=owner_phone,
+        category=category_clean,
+        alert_level=alert_level,
+        budget_amount=budget_amount,
+        current_spend=current_spend,
+        message_sid=message_sid,
+    )
+
+    print(
+        "BUDGET ALERT SENT:",
+        {
+            "category": category_clean,
+            "budget": budget_amount,
+            "current_spend": current_spend,
+            "message_sid": message_sid,
+        },
+        flush=True,
+    )
 
 def send_whatsapp_message(to_number, message):
     if not str(to_number).startswith("whatsapp:"):
@@ -461,7 +877,7 @@ def parse_structured_text_expense(text):
     return {
         "intent": "expense_entry",
         "vendor": vendor.title(),
-        "description": matched_category,
+        "description": vendor.title(),
         "category": matched_category,
         "amount": float(amount),
         "date": extract_purchase_date(date_value or "today"),
@@ -627,6 +1043,7 @@ def save_text_expense(intent_data, owner_phone, uploader_phone):
     description = intent_data.get("description") or "WhatsApp text expense"
     category = intent_data.get("category") or "Uncategorized"
 
+
     matched_category = match_category(description)
 
     if category == "Uncategorized" and matched_category:
@@ -687,6 +1104,22 @@ def save_text_expense(intent_data, owner_phone, uploader_phone):
     
 
     saved_entry_id = append_entry_and_get_id(entry)
+
+    if saved_entry_id:
+        try:
+            check_and_send_category_budget_alert(
+                owner_phone=owner_phone,
+                category=entry.get(
+                    "category",
+                    "Uncategorized",
+                ),
+            )
+        except Exception as exc:
+            print(
+                "TEXT EXPENSE BUDGET ALERT ERROR:",
+                str(exc),
+                flush=True,
+            )
 
     if saved_entry_id:
         try:
@@ -859,6 +1292,22 @@ def process_bill_in_background(raw_from, owner_phone, uploader_phone, media_url,
         save_start = time.time()
 
         saved_entry_id = append_entry_and_get_id(entry)
+
+        if saved_entry_id:
+            try:
+                check_and_send_category_budget_alert(
+                    owner_phone=owner_phone,
+                    category=entry.get(
+                        "category",
+                        "Uncategorized",
+                    ),
+                )
+            except Exception as exc:
+                print(
+                    "BILL BUDGET ALERT ERROR:",
+                    str(exc),
+                    flush=True,
+                )
 
         print(
             f"SAVE ENTRY: {round(time.time() - save_start, 2)} sec",
@@ -2188,6 +2637,19 @@ def process_text_in_background(raw_from, owner_phone, uploader_phone, incoming_m
             saved_entry_id = append_entry_and_get_id(
                 pending_entry
             )
+
+            if saved_entry_id:
+                try:
+                    check_and_send_category_budget_alert(
+                        owner_phone=owner_phone,
+                        category=category,
+                    )
+                except Exception as exc:
+                    print(
+                        "PENDING BILL BUDGET ALERT ERROR:",
+                        str(exc),
+                        flush=True,
+                    )
 
             update_vendor_memory(
                 user_phone=owner_phone,
