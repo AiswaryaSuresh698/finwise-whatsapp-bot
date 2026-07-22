@@ -1225,39 +1225,76 @@ def upsert_category_budget(
     monthly_limit,
 ):
     phone_clean = clean_phone(user_phone)
-    category_clean = normalize_category(category_name)
+    category_clean = normalize_category(
+        category_name
+    )
 
     with engine.begin() as conn:
-        conn.execute(
+        existing_result = conn.execute(
             text("""
-                INSERT INTO category_budgets (
-                    user_phone,
-                    category_name,
-                    monthly_limit,
-                    created_at,
-                    updated_at
-                )
-                VALUES (
-                    :user_phone,
-                    :category_name,
-                    :monthly_limit,
-                    CURRENT_TIMESTAMP,
-                    CURRENT_TIMESTAMP
-                )
-                ON CONFLICT (
-                    user_phone,
-                    category_name
-                )
-                DO UPDATE SET
-                    monthly_limit = EXCLUDED.monthly_limit,
-                    updated_at = CURRENT_TIMESTAMP
+                SELECT id
+                FROM category_budgets
+                WHERE user_phone = :user_phone
+                  AND LOWER(TRIM(category))
+                      = LOWER(TRIM(:category))
+                LIMIT 1
             """),
             {
                 "user_phone": phone_clean,
-                "category_name": category_clean,
-                "monthly_limit": float(monthly_limit),
+                "category": category_clean,
             },
-        )
+        ).fetchone()
+
+        if existing_result:
+            conn.execute(
+                text("""
+                    UPDATE category_budgets
+                    SET
+                        category = :category,
+                        monthly_budget = :monthly_budget,
+                        alert_enabled = TRUE,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :budget_id
+                      AND user_phone = :user_phone
+                """),
+                {
+                    "budget_id": existing_result[0],
+                    "user_phone": phone_clean,
+                    "category": category_clean,
+                    "monthly_budget": float(
+                        monthly_limit
+                    ),
+                },
+            )
+
+        else:
+            conn.execute(
+                text("""
+                    INSERT INTO category_budgets (
+                        user_phone,
+                        category,
+                        monthly_budget,
+                        alert_enabled,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (
+                        :user_phone,
+                        :category,
+                        :monthly_budget,
+                        TRUE,
+                        CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP
+                    )
+                """),
+                {
+                    "user_phone": phone_clean,
+                    "category": category_clean,
+                    "monthly_budget": float(
+                        monthly_limit
+                    ),
+                },
+            )
 
     return True
 
@@ -1270,13 +1307,14 @@ def load_category_budgets(user_phone):
                 SELECT
                     id,
                     user_phone,
-                    category_name,
-                    monthly_limit,
+                    category,
+                    monthly_budget,
+                    alert_enabled,
                     created_at,
                     updated_at
                 FROM category_budgets
                 WHERE user_phone = :user_phone
-                ORDER BY category_name
+                ORDER BY category
             """),
             {
                 "user_phone": phone_clean,
