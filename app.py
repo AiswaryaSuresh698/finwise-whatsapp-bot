@@ -5258,14 +5258,14 @@ elif screen == "⚙️ Settings":
 
                 budget_category = str(
                     budget_row.get(
-                        "category_name",
+                        "category",
                         ""
                     )
                 )
 
                 budget_limit = float(
                     budget_row.get(
-                        "monthly_limit",
+                        "monthly_budget",
                         0,
                     )
                     or 0
