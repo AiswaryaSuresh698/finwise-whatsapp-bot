@@ -67,6 +67,9 @@ from storage_utils import (
     delete_petpooja_report,
     append_petpooja_report,
     normalize_category,
+    upsert_category_budget,
+    load_category_budgets,
+    delete_category_budget,
 )
 
 load_dotenv()
@@ -5166,6 +5169,152 @@ elif screen == "⚙️ Settings":
 
                     st.cache_data.clear()
                     st.rerun()
+
+        st.markdown("### 💰 Category Monthly Limits")
+
+        st.caption(
+            "Set the maximum monthly spending limit for "
+            "each expense category."
+        )
+
+        with st.expander(
+            "💰 Set Limit for Category",
+            expanded=False,
+        ):
+            budget_categories = (
+                get_category_options_for_user(phone)
+            )
+
+            selected_budget_category = st.selectbox(
+                "Select Category",
+                budget_categories,
+                key="budget_category_select",
+            )
+
+            category_monthly_limit = st.number_input(
+                "Monthly Limit",
+                min_value=0.0,
+                step=500.0,
+                format="%.2f",
+                key="category_monthly_limit",
+            )
+
+            if st.button(
+                "💾 Save Category Limit",
+                type="primary",
+                use_container_width=True,
+                key="save_category_limit",
+            ):
+                if not selected_budget_category:
+                    st.error(
+                        "Please select a category."
+                    )
+
+                elif category_monthly_limit <= 0:
+                    st.error(
+                        "Please enter a limit greater than 0."
+                    )
+
+                else:
+                    upsert_category_budget(
+                        user_phone=phone,
+                        category_name=(
+                            selected_budget_category
+                        ),
+                        monthly_limit=(
+                            category_monthly_limit
+                        ),
+                    )
+
+                    st.success(
+                        f"Monthly limit saved for "
+                        f"{selected_budget_category}: "
+                        f"₹{category_monthly_limit:,.2f}"
+                    )
+
+                    st.cache_data.clear()
+                    st.rerun()
+
+        category_budgets_df = (
+            load_category_budgets(phone)
+        )
+
+        if category_budgets_df.empty:
+            st.info(
+                "No category limits have been set yet."
+            )
+
+        else:
+            st.markdown(
+                "#### Current Category Limits"
+            )
+
+            for _, budget_row in (
+                category_budgets_df.iterrows()
+            ):
+                budget_id = int(
+                    budget_row.get("id", 0)
+                )
+
+                budget_category = str(
+                    budget_row.get(
+                        "category_name",
+                        ""
+                    )
+                )
+
+                budget_limit = float(
+                    budget_row.get(
+                        "monthly_limit",
+                        0,
+                    )
+                    or 0
+                )
+
+                limit_col1, limit_col2, limit_col3 = (
+                    st.columns([4, 3, 1])
+                )
+
+                with limit_col1:
+                    st.write(
+                        f"**{budget_category}**"
+                    )
+
+                with limit_col2:
+                    st.write(
+                        f"₹{budget_limit:,.2f} / month"
+                    )
+
+                with limit_col3:
+                    if st.button(
+                        "Delete",
+                        key=(
+                            f"delete_category_budget_"
+                            f"{budget_id}"
+                        ),
+                    ):
+                        deleted = (
+                            delete_category_budget(
+                                budget_id=budget_id,
+                                user_phone=phone,
+                            )
+                        )
+
+                        if deleted:
+                            st.success(
+                                "Category limit deleted."
+                            )
+
+                            st.cache_data.clear()
+                            st.rerun()
+
+                        else:
+                            st.warning(
+                                "Category limit could "
+                                "not be deleted."
+                            )
+
+                st.divider()
 
         categories_df = load_user_categories(phone)
 

@@ -1219,6 +1219,95 @@ def delete_user_category(category_id):
 
     return result.rowcount
 
+def upsert_category_budget(
+    user_phone,
+    category_name,
+    monthly_limit,
+):
+    phone_clean = clean_phone(user_phone)
+    category_clean = normalize_category(category_name)
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO category_budgets (
+                    user_phone,
+                    category_name,
+                    monthly_limit,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    :user_phone,
+                    :category_name,
+                    :monthly_limit,
+                    CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP
+                )
+                ON CONFLICT (
+                    user_phone,
+                    category_name
+                )
+                DO UPDATE SET
+                    monthly_limit = EXCLUDED.monthly_limit,
+                    updated_at = CURRENT_TIMESTAMP
+            """),
+            {
+                "user_phone": phone_clean,
+                "category_name": category_clean,
+                "monthly_limit": float(monthly_limit),
+            },
+        )
+
+    return True
+
+def load_category_budgets(user_phone):
+    phone_clean = clean_phone(user_phone)
+
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("""
+                SELECT
+                    id,
+                    user_phone,
+                    category_name,
+                    monthly_limit,
+                    created_at,
+                    updated_at
+                FROM category_budgets
+                WHERE user_phone = :user_phone
+                ORDER BY category_name
+            """),
+            {
+                "user_phone": phone_clean,
+            },
+        )
+
+        rows = result.mappings().all()
+
+    return pd.DataFrame(rows)
+
+def delete_category_budget(
+    budget_id,
+    user_phone,
+):
+    phone_clean = clean_phone(user_phone)
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                DELETE FROM category_budgets
+                WHERE id = :budget_id
+                  AND user_phone = :user_phone
+            """),
+            {
+                "budget_id": int(budget_id),
+                "user_phone": phone_clean,
+            },
+        )
+
+    return result.rowcount
+
 def load_petpooja_entries_for_user(phone, limit=1000):
     if engine is None:
         return pd.DataFrame()
