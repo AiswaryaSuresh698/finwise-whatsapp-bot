@@ -5,11 +5,13 @@ from io import BytesIO
 from datetime import date, timedelta
 import uuid
 import json
+from altair import value
 from openai import OpenAI
 
 import pandas as pd
 import qrcode
 import streamlit as st
+import streamlit.components.v1 as components
 from twilio.rest import Client
 from dotenv import load_dotenv
 import calendar
@@ -74,6 +76,139 @@ from storage_utils import (
 
 load_dotenv()
 
+def get_currency_symbol(phone_number):
+    """
+    +1  -> $
+    +91 -> ₹
+
+    Also works when the stored phone number does not include '+'.
+    """
+    phone = str(phone_number or "").strip()
+
+    # Remove WhatsApp prefix if present
+    phone = phone.replace("whatsapp:", "")
+
+    # Keep digits only
+    digits = "".join(char for char in phone if char.isdigit())
+
+    if digits.startswith("91"):
+        return "₹"
+
+    if digits.startswith("1"):
+        return "$"
+
+    # Default currency
+    return "₹"
+
+
+def get_currency_code(phone_number):
+    """Return the storage currency code for the logged-in phone."""
+    phone = str(phone_number or "").replace("whatsapp:", "").strip()
+    digits = "".join(char for char in phone if char.isdigit())
+
+    if digits.startswith("1"):
+        return "CAD"
+
+    return "INR"
+
+
+def get_currency_column_format(phone_number):
+    """Return the Streamlit NumberColumn format for the user currency."""
+    return f"{get_currency_symbol(phone_number)}%.2f"
+
+
+def format_currency(amount, phone_number, decimals=2):
+    symbol = get_currency_symbol(phone_number)
+
+    try:
+        value = float(amount or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+
+    return f"{symbol}{value:,.{decimals}f}"
+
+
+def ensure_feedback_table():
+    """Create the feedback table only when the feedback page is used."""
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS finwise_feedback (
+                id SERIAL PRIMARY KEY,
+                user_phone TEXT NOT NULL,
+                rating INTEGER,
+                feature_request TEXT,
+                improvement TEXT,
+                contact_permission BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+
+
+def save_finwise_feedback(
+    user_phone,
+    rating,
+    feature_request,
+    improvement,
+    contact_permission,
+):
+    ensure_feedback_table()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO finwise_feedback (
+                    user_phone,
+                    rating,
+                    feature_request,
+                    improvement,
+                    contact_permission
+                )
+                VALUES (
+                    :user_phone,
+                    :rating,
+                    :feature_request,
+                    :improvement,
+                    :contact_permission
+                )
+            """),
+            {
+                "user_phone": clean_phone(user_phone),
+                "rating": int(rating),
+                "feature_request": feature_request.strip(),
+                "improvement": improvement.strip(),
+                "contact_permission": bool(contact_permission),
+            },
+        )
+
+
+def render_autofill_sync():
+    """Ask the browser to sync password-manager autofill with Streamlit."""
+    components.html(
+        """
+        <script>
+        function syncAutofill() {
+            const doc = window.parent.document;
+            const inputs = doc.querySelectorAll(
+                'input[autocomplete="tel"], input[autocomplete="current-password"]'
+            );
+
+            inputs.forEach((input) => {
+                if (input.value) {
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    input.blur();
+                }
+            });
+        }
+
+        setTimeout(syncAutofill, 250);
+        setTimeout(syncAutofill, 700);
+        setTimeout(syncAutofill, 1400);
+        </script>
+        """,
+        height=0,
+    )
+
 st.set_page_config(
     page_title="FinWise Bills",
     layout="wide",
@@ -122,7 +257,7 @@ if not database_ready:
 
     st.stop()
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def cached_load_entries():
     return load_entries()
 
@@ -140,25 +275,25 @@ def cached_load_entries_for_user(
     )
     
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def cached_load_petpooja_entries_for_user(phone, limit=1000):
     return load_petpooja_entries_for_user(phone, limit)
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def cached_load_petpooja_entries():
     return load_petpooja_entries()
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=120, show_spinner=False)
 def cached_dashboard_totals(phone, start_date=None, end_date=None):
     return get_dashboard_totals_for_user(phone, start_date, end_date)
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=120, show_spinner=False)
 def cached_petpooja_total(phone, start_date=None, end_date=None):
     return get_petpooja_total_for_user(phone, start_date, end_date)
 
 ensure_storage()
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=120, show_spinner=False)
 def cached_manual_income_total(
     phone,
     start_date=None,
@@ -171,7 +306,7 @@ def cached_manual_income_total(
     )
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def cached_income_entries(
     phone,
     start_date=None,
@@ -185,7 +320,7 @@ def cached_income_entries(
         limit=limit,
     )
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def cached_monthly_analysis(phone, year):
     return get_monthly_analysis_for_user(
         phone=phone,
@@ -193,7 +328,7 @@ def cached_monthly_analysis(phone, year):
     )
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def cached_month_expense_breakdown(
     phone,
     year,
@@ -206,7 +341,7 @@ def cached_month_expense_breakdown(
     )
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def cached_month_category_comparison(
     phone,
     year,
@@ -690,6 +825,8 @@ def build_finwise_chat_context(
 
     return {
         "account_phone": phone_clean,
+        "currency_symbol": get_currency_symbol(phone_clean),
+        "currency_code": get_currency_code(phone_clean),
         "selected_year": int(selected_year),
         "active_comparison": {
             "base_month_number": int(
@@ -781,11 +918,11 @@ Rules:
 2. Clearly state when the supplied data is insufficient.
 3. A missing expense may mean it was not uploaded. Do not
    state that it was definitely unpaid.
-4. Use Indian rupee formatting such as ₹1,25,000 where
-   practical.
+4. Use the currency_symbol and currency_code supplied in the
+   financial context. Do not convert the stored amounts.
 5. Explain results in clear business language.
 6. Show the important calculations used in the answer.
-7. When comparing negative net values, describe the rupee
+7. When comparing negative net values, describe the monetary
    improvement or decline instead of using a misleading
    percentage.
 8. Category names differing only by capitalization should
@@ -986,14 +1123,14 @@ def get_category_options_for_user(phone):
     return list(dict.fromkeys([c for c in combined if c]))
 
 
-def metric_card(label, value, icon, bg, color):
+def metric_card(label, value, icon, bg, color, phone_number):
     st.markdown(
         f'''
         <div style="background:white; border:1px solid #E2E8F0; border-radius:18px; padding:22px; display:flex; gap:18px; align-items:center; box-shadow:0 8px 24px rgba(15,23,42,0.05);">
             <div style="background:{bg}; color:{color}; width:62px; height:62px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:30px; font-weight:900;">{icon}</div>
             <div>
                 <div style="color:#64748B; font-size:14px; font-weight:700;">{label}</div>
-                <div style="color:{color}; font-size:30px; font-weight:900;">₹{value:,.2f}</div>
+                <div style="color:{color}; font-size:30px; font-weight:900;">{format_currency(value, phone_number)}</div>
             </div>
         </div>
         ''',
@@ -1035,6 +1172,7 @@ def format_change_message(
     base_month_name,
     comparison_month_name,
     currency=True,
+    phone_number="",
 ):
     base_value = float(base_value or 0)
     comparison_value = float(
@@ -1048,7 +1186,7 @@ def format_change_message(
         comparison_value
     )
 
-    amount_prefix = "₹" if currency else ""
+    amount_prefix = get_currency_symbol(phone_number) if currency else ""
 
     if base_value == 0 and comparison_value > 0:
         return (
@@ -1200,6 +1338,7 @@ def create_expense_pie_chart(
     pie_df,
     month_name,
     year,
+    phone_number,
 ):
     """
     Creates one category expense donut chart.
@@ -1271,14 +1410,14 @@ def create_expense_pie_chart(
     ax.text(
         0,
         -0.10,
-        f"₹{total_amount:,.0f}",
+        format_currency(total_amount, phone_number, decimals=0),
         horizontalalignment="center",
         verticalalignment="center",
         fontsize=13,
     )
 
     legend_labels = [
-        f"{category}: ₹{amount:,.0f}"
+        f"{category}: {format_currency(amount, phone_number, decimals=0)}"
         for category, amount in zip(
             categories,
             amounts,
@@ -1794,6 +1933,7 @@ if "logged_in" not in st.session_state:
 
 if "user_phone" not in st.session_state:
     st.session_state.user_phone = ""
+    
 
 query_params = st.query_params
 
@@ -1906,38 +2046,121 @@ if not st.session_state.logged_in:
             """,
             unsafe_allow_html=True
         )
-        auth_mode = st.radio("Choose option", ["Login", "Register", "Forgot Password"], horizontal=True, label_visibility="collapsed")
-        phone_input = st.text_input("WhatsApp phone number", placeholder="+91 98765 43210")
-
-        if auth_mode in ["Login", "Register"]:
-            password_input = st.text_input("Password", type="password", placeholder="Enter password")
+        auth_mode = st.radio(
+            "Choose option",
+            ["Login", "Register", "Forgot Password"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
 
         if auth_mode == "Login":
-            if st.button("Login", type="primary", use_container_width=True):
-                if validate_login(phone_input, password_input):
+            with st.form("finwise_login_form", clear_on_submit=False):
+                phone_input = st.text_input(
+                    "WhatsApp phone number",
+                    placeholder="+91 98765 43210",
+                    autocomplete="tel",
+                    key="login_phone_input",
+                )
+
+                password_input = st.text_input(
+                    "Password",
+                    type="password",
+                    placeholder="Enter password",
+                    autocomplete="current-password",
+                    key="login_password_input",
+                )
+
+                login_submitted = st.form_submit_button(
+                    "Login",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            render_autofill_sync()
+
+            if login_submitted:
+                phone_value = str(phone_input or "").strip()
+                password_value = str(password_input or "").strip()
+
+                if not phone_value:
+                    st.warning(
+                        "Please select or type your saved WhatsApp "
+                        "number, then click Login again."
+                    )
+
+                elif not password_value:
+                    st.warning("Please enter your password.")
+
+                elif validate_login(phone_value, password_value):
                     st.session_state.logged_in = True
-                    st.session_state.user_phone = clean_phone(phone_input)
+                    st.session_state.user_phone = clean_phone(phone_value)
 
                     st.query_params["logged_in"] = "true"
-                    st.query_params["phone"] = clean_phone(phone_input)
+                    st.query_params["phone"] = clean_phone(phone_value)
 
                     st.rerun()
+
                 else:
                     st.error("Invalid phone number or password.")
+
         elif auth_mode == "Register":
-            if st.button("Create Account", type="primary", use_container_width=True):
-                if not phone_input or not password_input:
+            with st.form("finwise_register_form", clear_on_submit=False):
+                phone_input = st.text_input(
+                    "WhatsApp phone number",
+                    placeholder="+91 98765 43210",
+                    autocomplete="tel",
+                    key="register_phone_input",
+                )
+
+                password_input = st.text_input(
+                    "Password",
+                    type="password",
+                    placeholder="Enter password",
+                    autocomplete="new-password",
+                    key="register_password_input",
+                )
+
+                register_submitted = st.form_submit_button(
+                    "Create Account",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            if register_submitted:
+                phone_value = str(phone_input or "").strip()
+                password_value = str(password_input or "").strip()
+
+                if not phone_value or not password_value:
                     st.error("Enter phone number and password.")
                 else:
-                    success, message = register_user(phone_input, password_input)
+                    success, message = register_user(
+                        phone_value,
+                        password_value,
+                    )
+
                     if success:
                         st.success(message)
                     else:
                         st.error(message)
-        else:
-            st.info("We will send a 6-digit reset code to your WhatsApp number.")
 
-            if st.button("Send WhatsApp Code", type="primary", use_container_width=True):
+        else:
+            phone_input = st.text_input(
+                "WhatsApp phone number",
+                placeholder="+91 98765 43210",
+                autocomplete="tel",
+                key="reset_phone_input",
+            )
+
+            st.info(
+                "We will send a 6-digit reset code to your "
+                "WhatsApp number."
+            )
+
+            if st.button(
+                "Send WhatsApp Code",
+                type="primary",
+                use_container_width=True,
+            ):
                 if not phone_input:
                     st.error("Enter your WhatsApp phone number.")
                 else:
@@ -1945,7 +2168,10 @@ if not st.session_state.logged_in:
                         send_password_reset_code(phone_input)
                         st.success("Reset code sent to your WhatsApp.")
                     except Exception as e:
-                        st.error(f"Could not send WhatsApp code. Error: {str(e)}")
+                        st.error(
+                            "Could not send WhatsApp code. "
+                            f"Error: {str(e)}"
+                        )
 
             reset_code_input = st.text_input(
                 "Enter WhatsApp Code",
@@ -1955,30 +2181,52 @@ if not st.session_state.logged_in:
             new_password = st.text_input(
                 "New Password",
                 type="password",
-                placeholder="Enter new password"
+                placeholder="Enter new password",
+                autocomplete="new-password",
             )
 
             if st.button("Reset Password", use_container_width=True):
                 if not phone_input or not reset_code_input or not new_password:
-                    st.error("Enter phone number, WhatsApp code, and new password.")
+                    st.error(
+                        "Enter phone number, WhatsApp code, "
+                        "and new password."
+                    )
 
                 elif "reset_code" not in st.session_state:
                     st.error("Please request a WhatsApp code first.")
 
-                elif time.time() > st.session_state.get("reset_code_expiry", 0):
-                    st.error("Reset code expired. Please request a new code.")
+                elif time.time() > st.session_state.get(
+                    "reset_code_expiry",
+                    0,
+                ):
+                    st.error(
+                        "Reset code expired. Please request a new code."
+                    )
 
-                elif clean_phone(phone_input) != st.session_state.get("reset_phone", ""):
-                    st.error("Phone number does not match the reset code.")
+                elif clean_phone(phone_input) != st.session_state.get(
+                    "reset_phone",
+                    "",
+                ):
+                    st.error(
+                        "Phone number does not match the reset code."
+                    )
 
-                elif reset_code_input.strip() != st.session_state.get("reset_code", ""):
+                elif reset_code_input.strip() != st.session_state.get(
+                    "reset_code",
+                    "",
+                ):
                     st.error("Invalid WhatsApp code.")
 
                 else:
-                    success, message = reset_password(phone_input, new_password)
+                    success, message = reset_password(
+                        phone_input,
+                        new_password,
+                    )
 
                     if success:
-                        st.success("Password reset successfully. Please login.")
+                        st.success(
+                            "Password reset successfully. Please login."
+                        )
 
                         st.session_state.pop("reset_code", None)
                         st.session_state.pop("reset_phone", None)
@@ -2020,6 +2268,7 @@ with st.sidebar:
             "📈 Month-over-Month Analysis",
             "⚙️ Settings",
             "🗑️ Recently Deleted",
+            "💡 Help Shape FinWise",
             "🎓 Training",
         ],
         label_visibility="collapsed",
@@ -2220,11 +2469,11 @@ if screen == "📊 Dashboard":
 
     m1, m2, m3 = st.columns(3)
     with m1:
-        metric_card("Total Income", total_income, "↗", "#DCFCE7", "#16A34A")
+        metric_card("Total Income", total_income, "↗", "#DCFCE7", "#16A34A", phone)
     with m2:
-        metric_card("Total Expenses", total_expense, "↘", "#FEE2E2", "#DC2626")
+        metric_card("Total Expenses", total_expense, "↘", "#FEE2E2", "#DC2626", phone)
     with m3:
-        metric_card("Net", net_amount, "💼", "#DBEAFE", "#2563EB")
+        metric_card("Net", net_amount, "💼", "#DBEAFE", "#2563EB", phone)
 
     st.write("### ➕ Add Manual Expense")
 
@@ -2283,7 +2532,7 @@ if screen == "📊 Dashboard":
                     "subtotal": float(manual_amount),
                     "tax": 0,
                     "total": float(manual_amount),
-                    "currency": "INR",
+                    "currency": get_currency_code(phone),
                     "confidence": "manual",
                     "reason": "Manual dashboard entry",
                     "image_path": "",
@@ -2347,7 +2596,7 @@ if screen == "📊 Dashboard":
                         "Amount",
                         min_value=0.0,
                         step=1.0,
-                        format="₹%.2f",
+                        format=get_currency_column_format(phone),
                     ),
                     "Delete?": st.column_config.CheckboxColumn(
                         "Delete?",
@@ -2368,7 +2617,7 @@ if screen == "📊 Dashboard":
 
             for i, row in mobile_display_df.iterrows():
                 with st.expander(
-                    f'{row["Expense Number"]} • {row["Date"]} • {row["Vendor"]} • ₹{float(row["Amount"]):,.2f}',
+                    f'{row["Expense Number"]} • {row["Date"]} • {row["Vendor"]} • {format_currency(row["Amount"], phone)}',
                     expanded=False
                 ):
                     st.write(f'**Date:** {row["Date"]}')
@@ -2537,13 +2786,13 @@ if screen == "📊 Dashboard":
     with income_metric_1:
         st.metric(
             "Petpooja Total Sales",
-            f"₹{petpooja_filtered_income:,.2f}"
+            format_currency(petpooja_filtered_income, phone)
         )
 
     with income_metric_2:
         st.metric(
             "Manual Event / Catering Income",
-            f"₹{manual_income_total:,.2f}"
+            format_currency(manual_income_total, phone)
         )
 
 
@@ -2684,7 +2933,7 @@ if screen == "📊 Dashboard":
         with preview_col2:
             st.metric(
                 "Report total",
-                f"₹{preview_total:,.2f}"
+                format_currency(preview_total, phone)
             )
 
         save_col, cancel_col = st.columns(2)
@@ -2813,14 +3062,21 @@ if screen == "📊 Dashboard":
             column_config={
                 "Sales Total": st.column_config.NumberColumn(
                     "Sales Total",
-                    format="₹%.2f",
+                    format=get_currency_column_format(phone),
                 ),
             },
         )
 
+        payment_summary_mobile = payment_summary_display.copy()
+        payment_summary_mobile["Sales Total"] = (
+            payment_summary_mobile["Sales Total"].apply(
+                lambda amount: format_currency(amount, phone)
+            )
+        )
+
         st.markdown(
             f'<div class="mobile-table">'
-            f'{mobile_table_html(payment_summary_display)}'
+            f'{mobile_table_html(payment_summary_mobile)}'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -2885,7 +3141,7 @@ if screen == "📊 Dashboard":
                 expander_title = (
                     f"📄 {source_filename} • "
                     f"{row_count:,} rows • "
-                    f"₹{report_total:,.2f}"
+                    + format_currency(report_total, phone)
                 )
 
                 with st.expander(
@@ -3082,7 +3338,7 @@ if screen == "📊 Dashboard":
                     ),
                     "amount": float(income_amount),
                     "payment_method": income_payment_method,
-                    "currency": "INR",
+                    "currency": get_currency_code(phone),
                     "source": "Manual Dashboard",
                 }
 
@@ -3220,7 +3476,7 @@ if screen == "📊 Dashboard":
                     "Amount",
                     min_value=0.0,
                     step=100.0,
-                    format="₹%.2f",
+                    format=get_currency_column_format(phone),
                 ),
                 "Payment Method": (
                     st.column_config.SelectboxColumn(
@@ -3765,7 +4021,7 @@ elif screen == "📁 Folder View":
         folder_total = folder_df["total"].sum()
         folder_count = len(folder_df)
 
-        with st.expander(f"📁 {folder}  •  {folder_count} bills  •  ₹{folder_total:,.2f}"):
+        with st.expander(f"📁 {folder}  •  {folder_count} bills  •  {format_currency(folder_total, phone)}"):
 
             vendors = sorted(
                 folder_df["vendor"].fillna("Unknown Vendor").astype(str).unique()
@@ -3780,7 +4036,7 @@ elif screen == "📁 Folder View":
                 vendor_total = vendor_df["total"].sum()
                 vendor_count = len(vendor_df)
 
-                with st.expander(f"🏪 {vendor}  •  {vendor_count} bills  •  ₹{vendor_total:,.2f}"):
+                with st.expander(f"🏪 {vendor}  •  {vendor_count} bills  •  {format_currency(vendor_total, phone)}"):
 
                     for _, row in vendor_df.iterrows():
 
@@ -3802,7 +4058,7 @@ elif screen == "📁 Folder View":
                                     🧾 {description if description else "Bill"}
                                 </div>
                                 <div style="color:#64748B; margin-top:6px;">
-                                    Date: {bill_date} &nbsp; | &nbsp; Amount: ₹{total:,.2f}
+                                    Date: {bill_date} &nbsp; | &nbsp; Amount: {format_currency(total, phone)}
                                 </div>
                             </div>
                             """,
@@ -3840,10 +4096,11 @@ elif screen == "📈 Month-over-Month Analysis":
         key="mom_selected_year",
     )
 
-    monthly_df = cached_monthly_analysis(
-        phone,
-        selected_year
-    )
+    with st.spinner("Loading..."):
+        monthly_df = cached_monthly_analysis(
+            phone,
+            selected_year
+        )
 
     if monthly_df.empty:
         st.warning(
@@ -3975,17 +4232,17 @@ elif screen == "📈 Month-over-Month Analysis":
 
                         st.markdown(
                             f"**Income**  \n"
-                            f"₹{total_income_value:,.2f}"
+                            + format_currency(total_income_value, phone)
                         )
 
                         st.markdown(
                             f"**Expense**  \n"
-                            f"₹{expense_value:,.2f}"
+                            + format_currency(expense_value, phone)
                         )
 
                         st.markdown(
                             f"**Net**  \n"
-                            f"₹{net_value:,.2f}"
+                            + format_currency(net_value, phone)
                         )
 
                         st.caption(
@@ -4036,8 +4293,7 @@ elif screen == "📈 Month-over-Month Analysis":
                                         f"📁 **"
                                         f"{category_row['category']}"
                                         f"**  \n"
-                                        f"₹"
-                                        f"{category_row['amount']:,.2f}"
+                                        f"{format_currency(category_row['amount'], phone)}"
                                         f" · "
                                         f"{category_row['bill_count']}"
                                         f" bill(s)"
@@ -4261,6 +4517,7 @@ elif screen == "📈 Month-over-Month Analysis":
                             pie_df=base_pie_df,
                             month_name=base_month_name,
                             year=selected_year,
+                            phone_number=phone,
                         )
 
                         st.pyplot(
@@ -4271,8 +4528,8 @@ elif screen == "📈 Month-over-Month Analysis":
                         plt.close(base_figure)
 
                         st.caption(
-                            f"Total expenses: "
-                            f"₹{float(base_row['expense']):,.2f}"
+                            "Total expenses: "
+                            + format_currency(float(base_row['expense']), phone)
                         )
 
                 with comparison_chart_column:
@@ -4284,6 +4541,7 @@ elif screen == "📈 Month-over-Month Analysis":
                                     comparison_month_name
                                 ),
                                 year=selected_year,
+                                phone_number=phone,
                             )
                         )
 
@@ -4295,8 +4553,8 @@ elif screen == "📈 Month-over-Month Analysis":
                         plt.close(comparison_figure)
 
                         st.caption(
-                            f"Total expenses: "
-                            f"₹{float(comparison_row['expense']):,.2f}"
+                            "Total expenses: "
+                            + format_currency(float(comparison_row['expense']), phone)
                         )
             
 
@@ -4404,10 +4662,9 @@ elif screen == "📈 Month-over-Month Analysis":
                                     f"{direction_icon} **"
                                     f"{change_row['category']}"
                                     f"**  \n"
-                                    f"₹"
-                                    f"{change_row['base']:,.2f}"
-                                    f" → ₹"
-                                    f"{change_row['comparison']:,.2f}"
+                                    f"{format_currency(change_row['base'], phone)}"
+                                    f" → "
+                                    f"{format_currency(change_row['comparison'], phone)}"
                                     f"  \n"
                                     f"{change_row['change']:+.1f}%"
                                 )
@@ -4468,7 +4725,7 @@ elif screen == "📈 Month-over-Month Analysis":
                                             "bill was recorded in "
                                             f"{comparison_month_name}. "
                                             f"{base_month_name}: "
-                                            f"₹{base_amount:,.2f}."
+                                            f"{format_currency(base_amount, phone)}."
                                         )
                                     )
 
@@ -4483,8 +4740,7 @@ elif screen == "📈 Month-over-Month Analysis":
                                             "** appeared in "
                                             f"{comparison_month_name}. "
                                             f"Amount: "
-                                            f"₹"
-                                            f"{comparison_amount:,.2f}."
+                                            f"{format_currency(comparison_amount, phone)}."
                                         )
                                     )
 
@@ -4889,7 +5145,7 @@ elif screen == "🗑️ Recently Deleted":
 
             with st.expander(
                 f"{reference} • {transaction_type} • "
-                f"{vendor} • ₹{amount:,.2f}",
+                f"{vendor} • {format_currency(amount, phone)}",
                 expanded=False
             ):
                 st.write(f"**Reference:** {reference}")
@@ -4898,7 +5154,7 @@ elif screen == "🗑️ Recently Deleted":
                 st.write(f"**Vendor / Customer:** {vendor}")
                 st.write(f"**Description:** {description}")
                 st.write(f"**Category:** {category}")
-                st.write(f"**Amount:** ₹{amount:,.2f}")
+                st.write(f"**Amount:** {format_currency(amount, phone)}")
 
                 if pd.notna(deleted_at):
                     st.write(
@@ -5229,7 +5485,7 @@ elif screen == "⚙️ Settings":
                     st.success(
                         f"Monthly limit saved for "
                         f"{selected_budget_category}: "
-                        f"₹{category_monthly_limit:,.2f}"
+                        + format_currency(category_monthly_limit, phone)
                     )
 
                     st.cache_data.clear()
@@ -5282,7 +5538,7 @@ elif screen == "⚙️ Settings":
 
                 with limit_col2:
                     st.write(
-                        f"₹{budget_limit:,.2f} / month"
+                        f"{format_currency(budget_limit, phone)} / month"
                     )
 
                 with limit_col3:
@@ -5340,6 +5596,81 @@ elif screen == "⚙️ Settings":
                         st.rerun()
 
                 st.divider()
+
+elif screen == "💡 Help Shape FinWise":
+    st.subheader("💡 Help Shape FinWise")
+
+    st.caption(
+        "FinWise is currently in beta. Tell us what would make "
+        "it more useful for your business."
+    )
+
+    with st.form("finwise_feedback_form", clear_on_submit=True):
+        feedback_rating = st.slider(
+            "How would you rate your FinWise experience?",
+            min_value=1,
+            max_value=5,
+            value=5,
+        )
+
+        feedback_feature = st.text_area(
+            "What feature would you love to see next?",
+            placeholder=(
+                "Example: vendor price comparison, automatic daily "
+                "briefing, bank statement upload..."
+            ),
+        )
+
+        feedback_improvement = st.text_area(
+            "What should we improve?",
+            placeholder=(
+                "Tell us about anything confusing, slow or difficult "
+                "to use."
+            ),
+        )
+
+        feedback_contact_permission = st.checkbox(
+            "You may contact me on my registered WhatsApp number "
+            "about this feedback.",
+            value=False,
+        )
+
+        feedback_submitted = st.form_submit_button(
+            "Submit Feedback",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if feedback_submitted:
+        if (
+            not feedback_feature.strip()
+            and not feedback_improvement.strip()
+        ):
+            st.warning(
+                "Please share a feature request or an improvement."
+            )
+        else:
+            try:
+                with st.spinner("Submitting feedback..."):
+                    save_finwise_feedback(
+                        user_phone=phone,
+                        rating=feedback_rating,
+                        feature_request=feedback_feature,
+                        improvement=feedback_improvement,
+                        contact_permission=(
+                            feedback_contact_permission
+                        ),
+                    )
+
+                st.success(
+                    "Thank you! Your feedback will help shape FinWise."
+                )
+            except Exception as exc:
+                st.error(
+                    "Feedback could not be submitted right now. "
+                    f"Error: {exc}"
+                )
+
 
 elif screen == "🎓 Training":
     st.subheader("🎓 Training")
