@@ -3395,59 +3395,59 @@ if screen == "📊 Dashboard":
                 .copy()
             )
 
-        income_editor_df = pd.DataFrame()
+            income_editor_df = pd.DataFrame()
 
-        income_editor_df["db_id"] = (
-            original_income_df["id"]
-            .astype(str)
-        )
+            income_editor_df["db_id"] = (
+                original_income_df["id"]
+                .astype(str)
+            )
 
-        income_editor_df["Reference"] = (
-            "INC-"
-            + original_income_df["id"].astype(str)
-        )
+            income_editor_df["Reference"] = (
+                "INC-"
+                + original_income_df["id"].astype(str)
+            )
 
-        income_editor_df["Date"] = (
-            original_income_df["income_date"]
-            .astype(str)
-        )
+            income_editor_df["Date"] = (
+                original_income_df["income_date"]
+                .astype(str)
+            )
 
-        income_editor_df["Customer"] = (
-            original_income_df["customer_name"]
-            .fillna("")
-            .astype(str)
-        )
+            income_editor_df["Customer"] = (
+                original_income_df["customer_name"]
+                .fillna("")
+                .astype(str)
+            )
 
-        income_editor_df["Event / Order"] = (
-            original_income_df["event_name"]
-            .fillna("")
-            .astype(str)
-        )
+            income_editor_df["Event / Order"] = (
+                original_income_df["event_name"]
+                .fillna("")
+                .astype(str)
+            )
 
-        income_editor_df["Category"] = (
-            original_income_df["income_category"]
-            .fillna("Other Income")
-            .astype(str)
-        )
+            income_editor_df["Category"] = (
+                original_income_df["income_category"]
+                .fillna("Other Income")
+                .astype(str)
+            )
 
-        income_editor_df["Description"] = (
-            original_income_df["description"]
-            .fillna("")
-            .astype(str)
-        )
+            income_editor_df["Description"] = (
+                original_income_df["description"]
+                .fillna("")
+                .astype(str)
+            )
 
-        income_editor_df["Amount"] = pd.to_numeric(
-            original_income_df["amount"],
-            errors="coerce"
-        ).fillna(0)
+            income_editor_df["Amount"] = pd.to_numeric(
+                original_income_df["amount"],
+                errors="coerce"
+            ).fillna(0)
 
-        income_editor_df["Payment Method"] = (
-            original_income_df["payment_method"]
-            .fillna("")
-            .astype(str)
-        )
+            income_editor_df["Payment Method"] = (
+                original_income_df["payment_method"]
+                .fillna("")
+                .astype(str)
+            )
 
-        income_editor_df["Delete?"] = False
+            income_editor_df["Delete?"] = False
 
         edited_income_df = st.data_editor(
             income_editor_df,
